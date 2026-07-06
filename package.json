@@ -1,0 +1,39 @@
+{
+  "name": "@couetilc/agentic-coding",
+  "version": "0.1.0",
+  "description": "Isolated-agent-container tooling: run Claude Code / Codex in disposable per-project Docker containers.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/couetilc/agentic-coding.git"
+  },
+  "author": "Connor Couetil <connor@couetil.com>",
+  "bin": {
+    "agentic-coding": "dist/cli.js",
+    "agent": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "files": [
+    "dist",
+    "docker",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

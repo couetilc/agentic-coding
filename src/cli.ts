@@ -1,0 +1,196 @@
+#!/usr/bin/env node
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import {
+  cacheVolumeNames,
+  errorMessage,
+  imageName,
+  labels,
+  loadConfig,
+} from './config.js';
+import { realExec } from './exec.js';
+import type { AgentConfig, CliDeps } from './types.js';
+
+const KNOWN = ['claude', 'codex', 'shell', 'clean', 'init', 'doctor'] as const;
+type Command = (typeof KNOWN)[number];
+
+// Which phase each not-yet-built command lands in — surfaced in the refusal so
+// the message is honest about when it will work (PLAN.md §10).
+const NOT_IMPLEMENTED: Record<Exclude<Command, 'doctor'>, string> = {
+  claude: 'phase 2',
+  codex: 'phase 2',
+  shell: 'phase 2',
+  clean: 'phase 2',
+  init: 'phase 3',
+};
+
+const USAGE = `agent — isolated-agent-container tooling (@couetilc/agentic-coding)
+
+Usage: agent <command> [args...]
+
+Commands:
+  claude [args...]   launch Claude Code in the project's agent container
+  codex  [args...]   launch Codex in the project's agent container
+  shell  [cmd...]    open a shell in the container instead of an agent
+  clean              remove this project's exited containers + rebuild images
+  init               scaffold/upgrade .agent/ in the current repo
+  doctor             print resolved config, image status, and env preflight
+
+Options:
+  -h, --help         show this help
+`;
+
+function isKnown(command: string): command is Command {
+  return (KNOWN as readonly string[]).includes(command);
+}
+
+export async function run(deps: CliDeps): Promise<number> {
+  const command = deps.argv[0];
+
+  if (command === '--help' || command === '-h') {
+    deps.out(USAGE);
+    return 0;
+  }
+  if (command === undefined) {
+    deps.err(`error: missing command\n\n${USAGE}`);
+    return 1;
+  }
+  if (!isKnown(command)) {
+    deps.err(`error: unknown command '${command}'\n\n${USAGE}`);
+    return 1;
+  }
+
+  // No docker-in-docker: every command refuses inside an agent container
+  // (PLAN.md §2). The shims carry the same guard so they no-op politely.
+  if (deps.env.IS_SANDBOX === '1') {
+    deps.err(
+      `error: 'agent ${command}' cannot run inside an agent container (IS_SANDBOX=1)\n`,
+    );
+    return 1;
+  }
+
+  if (command === 'doctor') {
+    return doctor(deps);
+  }
+
+  deps.err(
+    `error: 'agent ${command}' is not implemented yet (${NOT_IMPLEMENTED[command]})\n`,
+  );
+  return 1;
+}
+
+interface Section {
+  title: string;
+  lines: string[];
+}
+
+function renderSections(sections: Section[]): string {
+  return `${sections
+    .map((s) => `${s.title}\n${s.lines.map((l) => `  ${l}`).join('\n')}`)
+    .join('\n\n')}\n`;
+}
+
+function configSection(config: AgentConfig, version: string): Section {
+  const ports = Object.entries(config.ports).map(
+    ([name, port]) => `${name} → ${port} (as $DEV_HOST_${name.toUpperCase()})`,
+  );
+  return {
+    title: 'Config',
+    lines: [
+      `project        ${config.project}`,
+      `repo           ${config.repo}`,
+      `defaultBranch  ${config.defaultBranch}`,
+      `image          ${imageName(config.project)}`,
+      `labels         ${labels(config.project, version).join(', ')}`,
+      `claude         ${config.agents.claude.model} (effort: ${config.agents.claude.effort})`,
+      `codex          ${config.agents.codex.model} (effort: ${config.agents.codex.effort})`,
+      `ports          ${ports.length > 0 ? ports.join('; ') : '(none)'}`,
+      `caches         ${cacheVolumeNames(config).join(', ')}`,
+      `requiredEnv    ${config.requiredEnv.length > 0 ? config.requiredEnv.join(', ') : '(none)'}`,
+    ],
+  };
+}
+
+// doctor assembles named sections so phase 2 slots real image-status and
+// env-preflight checks in place of the placeholders without a rewrite.
+async function doctor(deps: CliDeps): Promise<number> {
+  const sections: Section[] = [];
+  let code = 0;
+
+  let config: AgentConfig | undefined;
+  try {
+    config = await loadConfig(deps);
+  } catch (err) {
+    sections.push({ title: 'Config', lines: [`error: ${errorMessage(err)}`] });
+    code = 1;
+  }
+
+  if (config !== undefined) {
+    sections.push(configSection(config, deps.version));
+  }
+  sections.push({ title: 'Images', lines: ['(status check added in phase 2)'] });
+  sections.push({
+    title: 'Environment',
+    lines: ['(preflight added in phase 2)'],
+  });
+
+  deps.out(renderSections(sections));
+  return code;
+}
+
+// Is this module the process entrypoint (bin run) rather than an import (a
+// test)? Node resolves symlinks when computing the entry module's
+// import.meta.url but process.argv[1] keeps the invoked path — and npm bin
+// stubs ARE symlinks (node_modules/.bin/agentic-coding → dist/cli.js) — so
+// argv[1] must be realpath'd before the URL comparison or npx/global/shim
+// invocations never match and the CLI silently does nothing.
+export function isEntry(metaUrl: string, argv1: string | undefined): boolean {
+  if (argv1 === undefined) {
+    return false;
+  }
+  let resolved = argv1;
+  try {
+    resolved = realpathSync(argv1);
+  } catch {
+    // argv1 doesn't exist on disk — compare it unresolved as the fallback.
+  }
+  return metaUrl === pathToFileURL(resolved).href;
+}
+
+// The real-world wiring of every seam. Kept in a function (not inlined at the
+// entrypoint) so a test can call it and cover each closure without the CLI
+// running on import. Exit is expressed via the returned code (see below), so no
+// process.exit closure is needed here.
+export function makeRealDeps(): CliDeps {
+  const version = (
+    JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { version: string }
+  ).version;
+  return {
+    argv: process.argv.slice(2),
+    env: process.env,
+    cwd: process.cwd(),
+    version,
+    out: (text) => {
+      process.stdout.write(text);
+    },
+    err: (text) => {
+      process.stderr.write(text);
+    },
+    fileExists: (path) => existsSync(path),
+    importModule: (spec) => import(spec),
+    exec: realExec,
+  };
+}
+
+// Bootstrap. `run` returns the exit code and we set process.exitCode (rather
+// than force-exiting) so buffered output flushes. AGENTIC_FORCE_MAIN lets a test
+// exercise this branch in-process; otherwise it fires only when this file is the
+// actual entrypoint, never on a plain import.
+if (
+  process.env.AGENTIC_FORCE_MAIN === '1' ||
+  isEntry(import.meta.url, process.argv[1])
+) {
+  process.exitCode = await run(makeRealDeps());
+}
