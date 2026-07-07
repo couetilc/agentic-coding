@@ -55,12 +55,88 @@ export interface ConfigDeps {
   importModule: (spec: string) => Promise<unknown>;
 }
 
+// Free-port picking seam (src/ports.ts). `tryListen` binds a throwaway TCP
+// server on 127.0.0.1:<port> and resolves true if it was free, false if
+// occupied; `randomInt` yields a uniform integer in [min, max]. Injecting both
+// lets tests simulate occupied ports without touching real sockets (PLAN.md §9).
+export interface PortDeps {
+  tryListen: (port: number) => Promise<boolean>;
+  randomInt: (min: number, max: number) => number;
+}
+
+// Everything env-file handling (src/env.ts) reads from the outside world.
+export interface EnvDeps {
+  cwd: string;
+  home: string;
+  readTextFile: (path: string) => string | undefined;
+}
+
+// Everything image build/status/clean (src/docker.ts) touches. `packageDockerDir`
+// is the npm package's own `docker/` directory (resolved relative to the module
+// so it works from `dist/` in an npx install).
+export interface DockerDeps {
+  exec: ExecFn;
+  fileExists: (path: string) => boolean;
+  cwd: string;
+  packageDockerDir: string;
+  out: (text: string) => void;
+  err: (text: string) => void;
+}
+
+// What an agent's auth resolution sees: the merged env-file view (project
+// overrides host), the host process env (e.g. CODEX_HOME), the home dir, and a
+// file reader (codex reads ~/.codex/auth.json). Kept separate from the launch so
+// each agent's credential policy is unit-testable in isolation.
+export interface AgentAuthDeps {
+  merged: Record<string, string>;
+  env: Record<string, string | undefined>;
+  home: string;
+  readTextFile: (path: string) => string | undefined;
+}
+
+// The result of an agent's credential check. `dockerArgs` are extra `-e` args to
+// splice into `docker run` (e.g. codex's bare `-e CODEX_AUTH_B64`); `childEnv`
+// carries the matching values into the docker CLIENT process env so a secret
+// never lands on the argv (never shows in `ps`), exactly as news does. A
+// discriminated union so a failure always carries an `error` message (no
+// undefined-message branch to guard at the call site).
+export type AgentAuth =
+  | { ok: true; dockerArgs: string[]; childEnv: Record<string, string> }
+  | {
+      ok: false;
+      error: string;
+      dockerArgs: string[];
+      childEnv: Record<string, string>;
+    };
+
+// The per-agent contract (src/agents/*.ts). `buildCommand` assembles the CMD run
+// in-container; `modelEnv` injects `-e <AGENT>_MODEL/_EFFORT` so the entrypoint
+// seeds config from these values rather than hardcoding them; `resolveAuth`
+// checks credentials through the merged env-file view + fs seam.
+export interface AgentModule {
+  kind: 'claude' | 'codex';
+  buildCommand: (settings: AgentSettings, args: string[]) => string[];
+  modelEnv: (settings: AgentSettings) => string[];
+  resolveAuth: (deps: AgentAuthDeps) => AgentAuth;
+}
+
 // Everything the CLI touches outside itself. Injected so `cli.ts` never reads a
-// global directly and stays fully exercisable in unit tests.
+// global directly and stays fully exercisable in unit tests. It is a superset of
+// the narrower per-module deps above (EnvDeps/DockerDeps/PortDeps), so cli.ts can
+// hand the same object to each module.
 export interface CliDeps extends ConfigDeps {
   argv: string[];
   env: Record<string, string | undefined>;
   version: string;
+  // Host home dir (for the ~/.config/agentic-coding/env file and codex auth).
+  home: string;
+  // Wall clock, injected so container-name timestamps are deterministic in tests.
+  now: () => Date;
+  // Read a file's UTF-8 text, or undefined if it does not exist.
+  readTextFile: (path: string) => string | undefined;
+  // The npm package's own docker/ directory (base image build context).
+  packageDockerDir: string;
+  port: PortDeps;
   out: (text: string) => void;
   err: (text: string) => void;
   exec: ExecFn;

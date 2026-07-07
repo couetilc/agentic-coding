@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { claudeAgent } from './agents/claude.js';
+import { codexAgent } from './agents/codex.js';
 import {
   cacheVolumeNames,
   errorMessage,
@@ -8,19 +11,30 @@ import {
   labels,
   loadConfig,
 } from './config.js';
+import {
+  baseStatusLine,
+  clean,
+  overlayStatusLine,
+  packageDockerDir,
+} from './docker.js';
+import {
+  environmentLines,
+  launchRequirements,
+  loadEnvFiles,
+  mergeEnv,
+} from './env.js';
 import { realExec } from './exec.js';
-import type { AgentConfig, CliDeps } from './types.js';
+import { runLaunch } from './launch.js';
+import { realPortDeps } from './ports.js';
+import type { AgentAuthDeps, AgentConfig, CliDeps } from './types.js';
 
 const KNOWN = ['claude', 'codex', 'shell', 'clean', 'init', 'doctor'] as const;
 type Command = (typeof KNOWN)[number];
 
 // Which phase each not-yet-built command lands in — surfaced in the refusal so
-// the message is honest about when it will work (PLAN.md §10).
-const NOT_IMPLEMENTED: Record<Exclude<Command, 'doctor'>, string> = {
-  claude: 'phase 2',
-  codex: 'phase 2',
-  shell: 'phase 2',
-  clean: 'phase 2',
+// the message is honest about when it will work (PLAN.md §10). Only `init`
+// remains for phase 3; the launch/clean commands are wired below.
+const NOT_IMPLEMENTED: Partial<Record<Command, string>> = {
   init: 'phase 3',
 };
 
@@ -72,11 +86,37 @@ export async function run(deps: CliDeps): Promise<number> {
   if (command === 'doctor') {
     return doctor(deps);
   }
+  if (command === 'init') {
+    deps.err(
+      `error: 'agent ${command}' is not implemented yet (${NOT_IMPLEMENTED[command]})\n`,
+    );
+    return 1;
+  }
+  if (command === 'clean') {
+    return runClean(deps);
+  }
+  // claude | codex | shell
+  return runLaunch(deps);
+}
 
-  deps.err(
-    `error: 'agent ${command}' is not implemented yet (${NOT_IMPLEMENTED[command]})\n`,
-  );
-  return 1;
+// `agent clean` — resolve config for the project label, then remove this
+// project's exited containers and rebuild images from scratch. A docker spawn
+// failure (docker not installed) surfaces as one actionable line, not an
+// unhandled-rejection stack trace.
+async function runClean(deps: CliDeps): Promise<number> {
+  let config: AgentConfig;
+  try {
+    config = await loadConfig(deps);
+  } catch (err) {
+    deps.err(`error: ${errorMessage(err)}\n`);
+    return 1;
+  }
+  try {
+    return await clean(deps, config, deps.version);
+  } catch (err) {
+    deps.err(`error: ${errorMessage(err)}\n`);
+    return 1;
+  }
 }
 
 interface Section {
@@ -128,14 +168,76 @@ async function doctor(deps: CliDeps): Promise<number> {
   if (config !== undefined) {
     sections.push(configSection(config, deps.version));
   }
-  sections.push({ title: 'Images', lines: ['(status check added in phase 2)'] });
-  sections.push({
-    title: 'Environment',
-    lines: ['(preflight added in phase 2)'],
-  });
+  sections.push(await imagesSection(deps, config));
+  sections.push(environmentSection(deps, config));
 
   deps.out(renderSections(sections));
   return code;
+}
+
+// Real image status: the versioned base tag, and the overlay when a project has
+// a .agent/Dockerfile (PLAN.md §5). doctor is exactly what a fresh-machine user
+// runs, so a missing docker binary renders as a status line here — the other
+// sections still print.
+async function imagesSection(
+  deps: CliDeps,
+  config: AgentConfig | undefined,
+): Promise<Section> {
+  try {
+    const lines = [await baseStatusLine(deps, deps.version)];
+    lines.push(
+      config !== undefined
+        ? await overlayStatusLine(deps, config, deps.version)
+        : 'overlay  (config not loaded)',
+    );
+    return { title: 'Images', lines };
+  } catch (err) {
+    return { title: 'Images', lines: [errorMessage(err)] };
+  }
+}
+
+function agentAuthDeps(
+  deps: CliDeps,
+  merged: Record<string, string>,
+): AgentAuthDeps {
+  return {
+    merged,
+    env: deps.env,
+    home: deps.home,
+    readTextFile: deps.readTextFile,
+  };
+}
+
+// Real env preflight (§7): the two env files, the merged key names (values
+// redacted), the GH_TOKEN/requiredEnv verdicts, and each agent's credential
+// presence — never a value.
+function environmentSection(
+  deps: CliDeps,
+  config: AgentConfig | undefined,
+): Section {
+  const files = loadEnvFiles(deps);
+  const merged = mergeEnv(files);
+  const lines = environmentLines(
+    files,
+    merged,
+    launchRequirements(config !== undefined ? config.requiredEnv : []),
+  );
+  const authDeps = agentAuthDeps(deps, merged);
+  lines.push(
+    `claude cred    ${
+      claudeAgent.resolveAuth(authDeps).ok
+        ? 'present'
+        : 'MISSING (CLAUDE_CODE_OAUTH_TOKEN → ~/.config/agentic-coding/env)'
+    }`,
+  );
+  lines.push(
+    `codex cred     ${
+      codexAgent.resolveAuth(authDeps).ok
+        ? 'present'
+        : 'MISSING (codex login on host, or OPENAI_API_KEY)'
+    }`,
+  );
+  return { title: 'Environment', lines };
 }
 
 // Is this module the process entrypoint (bin run) rather than an import (a
@@ -172,6 +274,10 @@ export function makeRealDeps(): CliDeps {
     env: process.env,
     cwd: process.cwd(),
     version,
+    home: homedir(),
+    now: () => new Date(),
+    packageDockerDir: packageDockerDir(),
+    port: realPortDeps,
     out: (text) => {
       process.stdout.write(text);
     },
@@ -179,6 +285,14 @@ export function makeRealDeps(): CliDeps {
       process.stderr.write(text);
     },
     fileExists: (path) => existsSync(path),
+    readTextFile: (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        // Missing (or unreadable) file → treated as absent by callers.
+        return undefined;
+      }
+    },
     importModule: (spec) => import(spec),
     exec: realExec,
   };

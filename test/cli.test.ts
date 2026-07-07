@@ -40,9 +40,14 @@ function makeDeps(over: Partial<CliDeps> = {}): Captured {
     env: {},
     cwd: '/proj',
     version: '9.9.9',
+    home: '/home/me',
+    now: () => new Date(2026, 0, 5, 3, 7, 9),
+    packageDockerDir: '/pkg/docker',
+    port: { tryListen: async () => true, randomInt: () => 50000 },
     out: (t) => outBuf.push(t),
     err: (t) => errBuf.push(t),
     fileExists: () => false,
+    readTextFile: () => undefined,
     importModule: async () => ({}),
     exec: async () => ({ code: 0, stdout: '', stderr: '' }),
     ...over,
@@ -78,11 +83,13 @@ describe('run — dispatch', () => {
   });
 
   it.each(['claude', 'codex', 'shell', 'clean'])(
-    'refuses %s as not implemented (phase 2)',
+    'dispatches %s and surfaces the config error when .agent/config.js is absent',
     async (cmd) => {
+      // fileExists:()=>false → loadConfig throws → the launch/clean path prints
+      // the actionable config error and exits 1 (proves real dispatch).
       const c = makeDeps({ argv: [cmd] });
       expect(await run(c.deps)).toBe(1);
-      expect(c.err()).toContain('not implemented yet (phase 2)');
+      expect(c.err()).toContain('run `agent init`');
     },
   );
 
@@ -90,6 +97,43 @@ describe('run — dispatch', () => {
     const c = makeDeps({ argv: ['init'] });
     expect(await run(c.deps)).toBe(1);
     expect(c.err()).toContain('not implemented yet (phase 3)');
+  });
+
+  it('runs clean with a valid config (label-scoped prune + rebuild)', async () => {
+    const calls: string[][] = [];
+    const c = makeDeps({
+      argv: ['clean'],
+      fileExists: (p) => p === '/proj/.agent/config.js',
+      importModule: async () => ({ default: VALID_CONFIG }),
+      exec: async (_cmd, args) => {
+        calls.push(args);
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(await run(c.deps)).toBe(0);
+    // The prune list must be scoped to THIS project's label (the §2 bug fix).
+    expect(calls[0]).toEqual([
+      'ps',
+      '-aq',
+      '--filter',
+      'label=agentic-coding.project=couetil-com',
+      '--filter',
+      'status=exited',
+    ]);
+  });
+
+  it('clean prints one actionable line and exits 1 when docker cannot be spawned', async () => {
+    const c = makeDeps({
+      argv: ['clean'],
+      fileExists: (p) => p === '/proj/.agent/config.js',
+      importModule: async () => ({ default: VALID_CONFIG }),
+      exec: async () => {
+        throw new Error('spawn docker ENOENT');
+      },
+    });
+    expect(await run(c.deps)).toBe(1);
+    expect(c.err()).toContain('docker is not available (spawn docker ENOENT)');
+    expect(c.err()).toContain('install Docker');
   });
 
   it('refuses to run inside a container (IS_SANDBOX=1) for every command', async () => {
@@ -102,10 +146,16 @@ describe('run — dispatch', () => {
 });
 
 describe('run — doctor', () => {
-  it('prints the resolved config and placeholder sections, exit 0', async () => {
+  it('prints the resolved config plus real image and environment sections, exit 0', async () => {
     const c = makeDeps({
       argv: ['doctor'],
-      fileExists: () => true,
+      // Config present; no overlay Dockerfile.
+      fileExists: (p) => p === '/proj/.agent/config.js',
+      // exit 0 from `docker image inspect` → base image present.
+      exec: async () => ({ code: 0, stdout: '', stderr: '' }),
+      // Only the project .env exists, carrying GH_TOKEN (value must not leak).
+      readTextFile: (path) =>
+        path === '/proj/.env' ? 'GH_TOKEN=secret-token\n' : undefined,
       importModule: async () => ({ default: VALID_CONFIG }),
     });
     expect(await run(c.deps)).toBe(0);
@@ -116,8 +166,70 @@ describe('run — doctor', () => {
     expect(text).toContain('astro → 4321 (as $DEV_HOST_ASTRO)');
     expect(text).toContain('caches         agentic-npm-cache, agentic-couetil-com-uv');
     expect(text).toContain('requiredEnv    (none)');
+    // Real Images section: versioned base present; overlay uses base (no Dockerfile).
+    expect(text).toContain('base     agentic-coding-base:9.9.9 — present');
+    expect(text).toContain('.agent/Dockerfile absent');
+    // Real Environment section: files, redacted keys, GH_TOKEN verdict.
+    expect(text).toContain('project ./.env — found');
+    expect(text).toContain('host    ~/.config/agentic-coding/env — missing');
+    expect(text).toContain('keys           GH_TOKEN (values redacted)');
+    expect(text).toContain('GH_TOKEN       present');
+    expect(text).not.toContain('secret-token');
+  });
+
+  it('reports missing images and credentials when nothing is present', async () => {
+    const c = makeDeps({
+      argv: ['doctor'],
+      fileExists: () => true,
+      exec: async () => ({ code: 1, stdout: '', stderr: '' }), // inspect fails
+      readTextFile: () => undefined,
+      importModule: async () => ({ default: VALID_CONFIG }),
+    });
+    expect(await run(c.deps)).toBe(0);
+    const text = c.out();
+    expect(text).toContain('base     agentic-coding-base:9.9.9 — missing');
+    expect(text).toContain('GH_TOKEN       MISSING — add to ./.env');
+    expect(text).toContain('claude cred    MISSING');
+    expect(text).toContain('codex cred     MISSING');
+  });
+
+  it('still renders every section when docker cannot be spawned (fresh machine)', async () => {
+    const c = makeDeps({
+      argv: ['doctor'],
+      fileExists: (p) => p === '/proj/.agent/config.js',
+      importModule: async () => ({ default: VALID_CONFIG }),
+      readTextFile: (path) =>
+        path === '/proj/.env' ? 'GH_TOKEN=gh\n' : undefined,
+      exec: async () => {
+        throw new Error('spawn docker ENOENT');
+      },
+    });
+    expect(await run(c.deps)).toBe(0);
+    const text = c.out();
+    // All three sections render; Images explains docker is missing.
+    expect(text).toContain('project        couetil-com');
     expect(text).toContain('Images');
-    expect(text).toContain('Environment');
+    expect(text).toContain('docker is not available (spawn docker ENOENT)');
+    expect(text).toContain('install Docker');
+    expect(text).toContain('GH_TOKEN       present');
+  });
+
+  it('shows credentials present when the env files carry them', async () => {
+    const c = makeDeps({
+      argv: ['doctor'],
+      fileExists: () => true,
+      readTextFile: (path) => {
+        if (path === '/proj/.env') return 'GH_TOKEN=g';
+        if (path === '/home/me/.config/agentic-coding/env')
+          return 'CLAUDE_CODE_OAUTH_TOKEN=c\nOPENAI_API_KEY=o';
+        return undefined;
+      },
+      importModule: async () => ({ default: VALID_CONFIG }),
+    });
+    expect(await run(c.deps)).toBe(0);
+    const text = c.out();
+    expect(text).toContain('claude cred    present');
+    expect(text).toContain('codex cred     present');
   });
 
   it('renders (none) for empty ports and lists a populated requiredEnv', async () => {
@@ -194,11 +306,21 @@ describe('makeRealDeps', () => {
     expect(typeof d.version).toBe('string');
     expect(d.version.length).toBeGreaterThan(0);
     expect(d.cwd).toBe(process.cwd());
+    expect(typeof d.home).toBe('string');
+    expect(d.home.length).toBeGreaterThan(0);
+    expect(d.now()).toBeInstanceOf(Date);
+    expect(d.packageDockerDir.replace(/\\/g, '/')).toMatch(/\/docker$/);
+    expect(typeof d.port.randomInt).toBe('function');
+    expect(typeof d.port.tryListen).toBe('function');
     // Exercise each closure (writing empty strings is harmless).
     d.out('');
     d.err('');
     expect(d.fileExists(fileURLToPath(import.meta.url))).toBe(true);
     expect(d.fileExists('/definitely/not/here')).toBe(false);
+    // readTextFile: reads an existing file; returns undefined on a missing one
+    // (the catch branch).
+    expect(d.readTextFile(fileURLToPath(import.meta.url))).toContain('makeRealDeps');
+    expect(d.readTextFile('/definitely/not/here')).toBeUndefined();
     await expect(d.importModule('node:os')).resolves.toBeDefined();
     expect(typeof d.exec).toBe('function');
   });

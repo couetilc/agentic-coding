@@ -7,6 +7,10 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
+    // The docker-gated e2e suite runs under its own config (npm run test:e2e);
+    // it exercises shell assets, not TS, so it must stay out of the coverage
+    // gate (PLAN.md §9).
+    exclude: ['test/e2e/**', 'node_modules/**'],
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

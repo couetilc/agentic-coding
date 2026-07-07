@@ -274,3 +274,31 @@ export function cacheVolumeNames(config: AgentConfig): string[] {
     cacheVolumeName(config.project, c),
   );
 }
+
+// Where each named cache volume mounts inside the container. `npm` keeps node's
+// conventional cache dir; `uv` uses XDG's `~/.cache/uv` (uv's default); anything
+// else lands at `~/.cache/<name>`. The base image pre-creates `~/.cache` owned by
+// `node` so a fresh volume never ends up root-owned. Documented here as the one
+// place the mapping lives (PLAN.md §5, launch item 4).
+const CACHE_MOUNT_PATHS: Record<string, string> = {
+  npm: '/home/node/.npm',
+  uv: '/home/node/.cache/uv',
+};
+
+export function cacheMountPath(cache: string): string {
+  return CACHE_MOUNT_PATHS[cache] ?? `/home/node/.cache/${cache}`;
+}
+
+export interface CacheMount {
+  volume: string;
+  path: string;
+}
+
+// The shared npm cache is always mounted first; each config cache follows,
+// project-scoped, at its conventional container path.
+export function cacheMounts(config: AgentConfig): CacheMount[] {
+  return ['npm', ...config.caches].map((c) => ({
+    volume: cacheVolumeName(config.project, c),
+    path: cacheMountPath(c),
+  }));
+}

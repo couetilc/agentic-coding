@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ConfigError,
   SUPPORTED_SCHEMA_VERSION,
+  cacheMountPath,
+  cacheMounts,
   cacheVolumeName,
   cacheVolumeNames,
   configPath,
@@ -264,6 +266,21 @@ describe('derivations', () => {
     expect(cacheVolumeNames(config)).toEqual([
       'agentic-npm-cache',
       'agentic-couetil-com-uv',
+    ]);
+  });
+
+  it('cacheMountPath maps known caches and falls back to ~/.cache/<name>', () => {
+    expect(cacheMountPath('npm')).toBe('/home/node/.npm');
+    expect(cacheMountPath('uv')).toBe('/home/node/.cache/uv');
+    expect(cacheMountPath('pip')).toBe('/home/node/.cache/pip');
+  });
+
+  it('cacheMounts pairs each volume with its container path, npm first', () => {
+    const config = { ...VALID, caches: ['uv', 'pip'] } as AgentConfig;
+    expect(cacheMounts(config)).toEqual([
+      { volume: 'agentic-npm-cache', path: '/home/node/.npm' },
+      { volume: 'agentic-couetil-com-uv', path: '/home/node/.cache/uv' },
+      { volume: 'agentic-couetil-com-pip', path: '/home/node/.cache/pip' },
     ]);
   });
 });
