@@ -47,6 +47,7 @@ describe('buildRunArgs', () => {
       gitUserName: 'Connor Couetil',
       gitUserEmail: 'connor@couetil.com',
       colorterm: 'truecolor',
+      isTTY: true,
       agentEnv: [
         '-e',
         'CLAUDE_MODEL=claude-fable-5',
@@ -126,12 +127,41 @@ describe('buildRunArgs', () => {
       gitUserName: 'A',
       gitUserEmail: 'a@b',
       colorterm: '',
+      isTTY: true,
       agentEnv: [],
       ports: [],
       image: 'img',
       cmd: ['bash'],
     };
     expect(buildRunArgs(spec)).not.toContain('--rm');
+  });
+
+  it('requests a TTY (-it) only when isTTY, else -i (scriptable headless run)', () => {
+    const base: RunSpec = {
+      containerName: 'n',
+      labels: [],
+      cacheMounts: [],
+      envFileArgs: [],
+      agentKind: 'shell',
+      repo: 'o/r',
+      defaultBranch: 'main',
+      gitUserName: 'A',
+      gitUserEmail: 'a@b',
+      colorterm: '',
+      isTTY: true,
+      agentEnv: [],
+      ports: [],
+      image: 'img',
+      cmd: ['true'],
+    };
+    // Interactive terminal: identical to news's behavior (-it).
+    const tty = buildRunArgs({ ...base, isTTY: true });
+    expect(tty[1]).toBe('-it');
+    // No terminal (piped/scripted): -i only, so docker doesn't reject with
+    // "the input device is not a TTY".
+    const headless = buildRunArgs({ ...base, isTTY: false });
+    expect(headless[1]).toBe('-i');
+    expect(headless).not.toContain('-it');
   });
 });
 
@@ -213,11 +243,16 @@ function makeDeps(over: Partial<CliDeps> = {}): {
     cwd: '/proj',
     version: '1.2.3',
     home: '/home/me',
+    isTTY: true,
     now: () => new Date(2026, 0, 5, 3, 7, 9),
     packageDockerDir: '/pkg/docker',
+    packageTemplatesDir: '/pkg/templates',
     port: { tryListen: async () => true, randomInt: () => 50000 },
     out: () => {},
     err: (t) => errBuf.push(t),
+    writeTextFile: () => {},
+    makeExecutable: () => {},
+    mkdirp: () => {},
     // Config present; no overlay Dockerfile by default.
     fileExists: (p) => p === CONFIG_PATH,
     readTextFile: (path) =>
@@ -233,11 +268,14 @@ function makeDeps(over: Partial<CliDeps> = {}): {
   return { deps, calls, err: () => errBuf.join('') };
 }
 
-// The MAIN interactive run (has -it); the chown pre-step is also `docker run`
-// but detached from the tty (--rm, -u 0).
+// The MAIN run (has -it with a tty, -i without); the chown pre-step is also
+// `docker run` but distinguished by --rm/-u 0.
 function dockerRun(calls: Call[]): Call {
   const call = calls.find(
-    (c) => c.command === 'docker' && c.args[0] === 'run' && c.args[1] === '-it',
+    (c) =>
+      c.command === 'docker' &&
+      c.args[0] === 'run' &&
+      (c.args[1] === '-it' || c.args[1] === '-i'),
   );
   if (call === undefined) {
     throw new Error('no docker run call recorded');
@@ -306,7 +344,7 @@ describe('runLaunch', () => {
     expect(run.args).not.toContain('TERM=xterm-ghostty');
   });
 
-  it('shell skips agent credentials but still needs GH_TOKEN; CMD is bash', async () => {
+  it('shell skips agent credentials but still needs GH_TOKEN; runs the cmd directly', async () => {
     const { deps, calls } = makeDeps({
       argv: ['shell', 'ls', '-la'],
       // No agent creds at all — shell must not care.
@@ -315,9 +353,36 @@ describe('runLaunch', () => {
     expect(await runLaunch(deps)).toBe(0);
     const run = dockerRun(calls);
     expect(run.args).toContain('AGENT_KIND=shell');
-    expect(run.args.slice(-3)).toEqual(['bash', 'ls', '-la']);
+    // The command is exec'd directly (entrypoint `exec "$@"`), NOT `bash ls -la`
+    // which would treat `ls` as a script file.
+    expect(run.args.slice(-2)).toEqual(['ls', '-la']);
     // No CLAUDE_MODEL / auth env for a shell.
     expect(run.args).not.toContain('CLAUDE_MODEL=claude-fable-5');
+  });
+
+  it('shell with no command opens an interactive bash', async () => {
+    const { deps, calls } = makeDeps({
+      argv: ['shell'],
+      readTextFile: (path) => (path === '/proj/.env' ? 'GH_TOKEN=gh' : undefined),
+    });
+    expect(await runLaunch(deps)).toBe(0);
+    const run = dockerRun(calls);
+    expect(run.args.slice(-1)).toEqual(['bash']);
+  });
+
+  it('strips a leading -- separator and runs the tail (scriptable shell -- true)', async () => {
+    const { deps, calls } = makeDeps({
+      argv: ['shell', '--', 'true'],
+      isTTY: false, // scripted: no -t
+      readTextFile: (path) => (path === '/proj/.env' ? 'GH_TOKEN=gh' : undefined),
+    });
+    expect(await runLaunch(deps)).toBe(0);
+    const run = dockerRun(calls);
+    // -i (no -t) so docker accepts it without a terminal.
+    expect(run.args[1]).toBe('-i');
+    // CMD is just `true`; the `--` is consumed, not passed to the container.
+    expect(run.args.slice(-1)).toEqual(['true']);
+    expect(run.args).not.toContain('--');
   });
 
   it('codex keeps CODEX_AUTH_B64 off the argv but in the docker child env', async () => {

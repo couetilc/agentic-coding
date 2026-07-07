@@ -71,6 +71,26 @@ export interface EnvDeps {
   readTextFile: (path: string) => string | undefined;
 }
 
+// Everything the scaffolder (src/scaffold.ts) touches. `packageTemplatesDir` is
+// the npm package's own `templates/` directory (resolved relative to the module
+// so it works from `dist/` in an npx install). The write seams (write/mkdirp/
+// makeExecutable) keep every fs mutation injectable, so scaffold logic is fully
+// exercisable and tests can point it at a tmp dir (PLAN.md §9).
+export interface ScaffoldDeps {
+  cwd: string;
+  exec: ExecFn;
+  // This CLI's own version — the shim major pin is derived from it (§3).
+  version: string;
+  packageTemplatesDir: string;
+  fileExists: (path: string) => boolean;
+  readTextFile: (path: string) => string | undefined;
+  writeTextFile: (path: string, content: string) => void;
+  makeExecutable: (path: string) => void;
+  mkdirp: (path: string) => void;
+  out: (text: string) => void;
+  err: (text: string) => void;
+}
+
 // Everything image build/status/clean (src/docker.ts) touches. `packageDockerDir`
 // is the npm package's own `docker/` directory (resolved relative to the module
 // so it works from `dist/` in an npx install).
@@ -122,20 +142,31 @@ export interface AgentModule {
 
 // Everything the CLI touches outside itself. Injected so `cli.ts` never reads a
 // global directly and stays fully exercisable in unit tests. It is a superset of
-// the narrower per-module deps above (EnvDeps/DockerDeps/PortDeps), so cli.ts can
-// hand the same object to each module.
+// the narrower per-module deps above (EnvDeps/DockerDeps/PortDeps/ScaffoldDeps),
+// so cli.ts can hand the same object to each module.
 export interface CliDeps extends ConfigDeps {
   argv: string[];
   env: Record<string, string | undefined>;
   version: string;
   // Host home dir (for the ~/.config/agentic-coding/env file and codex auth).
   home: string;
+  // Whether stdout is a TTY. `docker run` gets `-t` only when true, so scripted
+  // (non-terminal) launches like `agent claude -p ...` / `agent shell -- cmd`
+  // don't hit "the input device is not a TTY" (PLAN.md §10.3 deviation).
+  isTTY: boolean;
   // Wall clock, injected so container-name timestamps are deterministic in tests.
   now: () => Date;
   // Read a file's UTF-8 text, or undefined if it does not exist.
   readTextFile: (path: string) => string | undefined;
-  // The npm package's own docker/ directory (base image build context).
+  // Write a file's UTF-8 text (scaffolder); create a directory and parents;
+  // mark a file executable. Injected fs-mutation seams for `agent init`.
+  writeTextFile: (path: string, content: string) => void;
+  makeExecutable: (path: string) => void;
+  mkdirp: (path: string) => void;
+  // The npm package's own docker/ and templates/ directories (build context and
+  // scaffold sources), resolved module-relative so they work from dist/.
   packageDockerDir: string;
+  packageTemplatesDir: string;
   port: PortDeps;
   out: (text: string) => void;
   err: (text: string) => void;

@@ -46,6 +46,10 @@ export interface RunSpec {
   gitUserName: string;
   gitUserEmail: string;
   colorterm: string;
+  // Attach a pseudo-TTY (`-t`)? Always `-i`; `-t` only for a real terminal.
+  // Headless/scripted launches (`agent claude -p ...`, `agent shell -- cmd`)
+  // must NOT request a TTY or docker fails "the input device is not a TTY".
+  isTTY: boolean;
   // Agent model/effort env + any auth `-e` args (values via childEnv, not argv).
   agentEnv: string[];
   ports: PortMapping[];
@@ -55,9 +59,10 @@ export interface RunSpec {
 
 // The `docker <...>` argv (leading `docker` is the exec command; this returns
 // everything after it). No `--rm`: containers are kept so unpushed work is
-// salvageable (isolation contract).
+// salvageable (isolation contract). `-i` keeps stdin open for interactive
+// agents; `-t` is added only for a real terminal (deviation from news, §10.3).
 export function buildRunArgs(spec: RunSpec): string[] {
-  const args = ['run', '-it', '--name', spec.containerName];
+  const args = ['run', spec.isTTY ? '-it' : '-i', '--name', spec.containerName];
   for (const label of spec.labels) {
     args.push('--label', label);
   }
@@ -120,7 +125,11 @@ async function gitConfigValue(deps: CliDeps, key: string): Promise<string> {
 // preflight/build failure), mirroring the CLI's run() contract.
 export async function runLaunch(deps: CliDeps): Promise<number> {
   const command = deps.argv[0];
-  const args = deps.argv.slice(1);
+  // A leading `--` is the conventional end-of-options separator ("everything
+  // after it is for the subcommand"); strip one so `agent shell -- true` and
+  // `agent claude -- --flag` pass the tail through cleanly.
+  const rawArgs = deps.argv.slice(1);
+  const args = rawArgs[0] === '--' ? rawArgs.slice(1) : rawArgs;
 
   let config: AgentConfig;
   try {
@@ -215,9 +224,15 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
       host: hostPorts[i],
     }));
 
+    // shell: run the given command directly (the entrypoint `exec "$@"`s it), or
+    // an interactive `bash` when none is given. Running it directly — not
+    // `bash <cmd>`, which would treat the command as a script file — is what
+    // makes scriptable `agent shell -- true` work (§10.3).
     const cmd = agent
       ? agent.buildCommand(config.agents[agent.kind], args)
-      : ['bash', ...args];
+      : args.length > 0
+        ? args
+        : ['bash'];
 
     const name = containerName(config.project, command, deps.now());
     deps.err(`Starting ${name} (kept after exit; \`agent clean\` to prune)\n`);
@@ -243,6 +258,7 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
       gitUserName,
       gitUserEmail,
       colorterm: deps.env.COLORTERM ?? '',
+      isTTY: deps.isTTY,
       agentEnv,
       ports,
       image: overlay.image,

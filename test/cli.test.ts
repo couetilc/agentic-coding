@@ -1,7 +1,9 @@
 import {
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -41,13 +43,18 @@ function makeDeps(over: Partial<CliDeps> = {}): Captured {
     cwd: '/proj',
     version: '9.9.9',
     home: '/home/me',
+    isTTY: false,
     now: () => new Date(2026, 0, 5, 3, 7, 9),
     packageDockerDir: '/pkg/docker',
+    packageTemplatesDir: '/pkg/templates',
     port: { tryListen: async () => true, randomInt: () => 50000 },
     out: (t) => outBuf.push(t),
     err: (t) => errBuf.push(t),
     fileExists: () => false,
     readTextFile: () => undefined,
+    writeTextFile: () => {},
+    makeExecutable: () => {},
+    mkdirp: () => {},
     importModule: async () => ({}),
     exec: async () => ({ code: 0, stdout: '', stderr: '' }),
     ...over,
@@ -93,10 +100,14 @@ describe('run — dispatch', () => {
     },
   );
 
-  it('refuses init as not implemented (phase 3)', async () => {
+  it('dispatches init and surfaces the not-a-git-repo error (proves real dispatch)', async () => {
+    // The default exec stub returns exit 0 with empty stdout, so
+    // `git rev-parse --is-inside-work-tree` yields '' (not 'true') → init
+    // refuses with the actionable error. (The success path is covered against
+    // real git fixtures in scaffold.test.ts.)
     const c = makeDeps({ argv: ['init'] });
     expect(await run(c.deps)).toBe(1);
-    expect(c.err()).toContain('not implemented yet (phase 3)');
+    expect(c.err()).toContain('not a git repository');
   });
 
   it('runs clean with a valid config (label-scoped prune + rebuild)', async () => {
@@ -308,8 +319,10 @@ describe('makeRealDeps', () => {
     expect(d.cwd).toBe(process.cwd());
     expect(typeof d.home).toBe('string');
     expect(d.home.length).toBeGreaterThan(0);
+    expect(typeof d.isTTY).toBe('boolean');
     expect(d.now()).toBeInstanceOf(Date);
     expect(d.packageDockerDir.replace(/\\/g, '/')).toMatch(/\/docker$/);
+    expect(d.packageTemplatesDir.replace(/\\/g, '/')).toMatch(/\/templates$/);
     expect(typeof d.port.randomInt).toBe('function');
     expect(typeof d.port.tryListen).toBe('function');
     // Exercise each closure (writing empty strings is harmless).
@@ -321,6 +334,19 @@ describe('makeRealDeps', () => {
     // (the catch branch).
     expect(d.readTextFile(fileURLToPath(import.meta.url))).toContain('makeRealDeps');
     expect(d.readTextFile('/definitely/not/here')).toBeUndefined();
+    // Exercise the fs-mutation seams against a real tmp dir.
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-realdeps-'));
+    try {
+      const sub = join(dir, 'a', 'b');
+      d.mkdirp(sub);
+      const file = join(sub, 'shim');
+      d.writeTextFile(file, 'hi');
+      d.makeExecutable(file);
+      expect(readFileSync(file, 'utf8')).toBe('hi');
+      expect(statSync(file).mode & 0o111).not.toBe(0); // executable bits set
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
     await expect(d.importModule('node:os')).resolves.toBeDefined();
     expect(typeof d.exec).toBe('function');
   });

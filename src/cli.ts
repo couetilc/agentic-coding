@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { claudeAgent } from './agents/claude.js';
@@ -26,17 +33,11 @@ import {
 import { realExec } from './exec.js';
 import { runLaunch } from './launch.js';
 import { realPortDeps } from './ports.js';
+import { packageTemplatesDir, runInit } from './scaffold.js';
 import type { AgentAuthDeps, AgentConfig, CliDeps } from './types.js';
 
 const KNOWN = ['claude', 'codex', 'shell', 'clean', 'init', 'doctor'] as const;
 type Command = (typeof KNOWN)[number];
-
-// Which phase each not-yet-built command lands in — surfaced in the refusal so
-// the message is honest about when it will work (PLAN.md §10). Only `init`
-// remains for phase 3; the launch/clean commands are wired below.
-const NOT_IMPLEMENTED: Partial<Record<Command, string>> = {
-  init: 'phase 3',
-};
 
 const USAGE = `agent — isolated-agent-container tooling (@couetilc/agentic-coding)
 
@@ -87,10 +88,7 @@ export async function run(deps: CliDeps): Promise<number> {
     return doctor(deps);
   }
   if (command === 'init') {
-    deps.err(
-      `error: 'agent ${command}' is not implemented yet (${NOT_IMPLEMENTED[command]})\n`,
-    );
-    return 1;
+    return runInit(deps);
   }
   if (command === 'clean') {
     return runClean(deps);
@@ -275,8 +273,12 @@ export function makeRealDeps(): CliDeps {
     cwd: process.cwd(),
     version,
     home: homedir(),
+    // `true` when attached to a terminal; `process.stdout.isTTY` is `true` or
+    // undefined, so coerce. Drives whether `docker run` gets `-t` (launch.ts).
+    isTTY: process.stdout.isTTY === true,
     now: () => new Date(),
     packageDockerDir: packageDockerDir(),
+    packageTemplatesDir: packageTemplatesDir(),
     port: realPortDeps,
     out: (text) => {
       process.stdout.write(text);
@@ -292,6 +294,15 @@ export function makeRealDeps(): CliDeps {
         // Missing (or unreadable) file → treated as absent by callers.
         return undefined;
       }
+    },
+    writeTextFile: (path, content) => {
+      writeFileSync(path, content);
+    },
+    makeExecutable: (path) => {
+      chmodSync(path, 0o755);
+    },
+    mkdirp: (path) => {
+      mkdirSync(path, { recursive: true });
     },
     importModule: (spec) => import(spec),
     exec: realExec,

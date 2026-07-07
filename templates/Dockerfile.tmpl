@@ -1,0 +1,24 @@
+# .agent/Dockerfile — OPTIONAL overlay for this project's root/system deps.
+#
+# `agent init` does NOT write this file; copy it to `.agent/Dockerfile` and
+# uncomment to use it. When present, the CLI builds it FROM the versioned base
+# image and runs the result; when absent, the base image is used directly.
+#
+# What goes here vs .agent/init.sh:
+#   • Overlay (this file): root/system deps — `apt-get install`, /usr/local
+#     binaries, browser libraries. Built BEFORE launch, as root.
+#   • init.sh: everything user-space and repo-dependent (`npm ci`, `uv sync`),
+#     run as the non-root `node` user after the clone.
+#
+# The CLI injects the base image tag as the BASE build-arg, so there is no
+# version literal to let drift. The build context is `.agent/` and the repo
+# clone does NOT exist at build time — do not reference repo files here.
+
+# ARG BASE
+# FROM ${BASE}
+#
+# USER root
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#         some-system-package \
+#     && rm -rf /var/lib/apt/lists/*
+# USER node
