@@ -88,6 +88,10 @@ export function buildArgs(
   ];
 }
 
+// No `--pull` here: BASE is always a local-only tag (see baseTag), never a
+// registry image, so `--pull` would make Docker try to resolve it from
+// Docker Hub and fail with "pull access denied". `--no-cache` alone is
+// enough to force a fresh overlay layer.
 export function overlayBuildArgs(
   context: string,
   tag: string,
@@ -96,7 +100,7 @@ export function overlayBuildArgs(
 ): string[] {
   return [
     'build',
-    ...(fresh ? ['--pull', '--no-cache'] : []),
+    ...(fresh ? ['--no-cache'] : []),
     '--build-arg',
     `BASE=${base}`,
     '-t',

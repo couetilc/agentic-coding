@@ -106,7 +106,6 @@ describe('pure argv builders', () => {
     ]);
     expect(overlayBuildArgs('/proj/.agent', 'ov:1', 'base:1', true)).toEqual([
       'build',
-      '--pull',
       '--no-cache',
       '--build-arg',
       'BASE=base:1',
