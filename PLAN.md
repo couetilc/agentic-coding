@@ -366,14 +366,8 @@ in `vitest.config.ts`, so `npm run coverage` is a hard gate. Policy keeping
 
 ## 11. Deferred / future work
 
-- **Safe resume**: interactive-only reattach (refuse `-p` containers),
-  possibly via `docker exec` into a running container or a session-manager
-  process rather than `docker start -ai` replay.
-- Registry-published base image (GHCR) to skip the first local build.
-- Additional agent integrations (the `src/agents/` seam is the contract).
-- `agent prune --all-projects`, container GC by age.
-- Config as functions / `defineConfig()` helper with editor types.
-- Windows hosts.
+Moved to [ROADMAP.md](ROADMAP.md) ("Later"). Section number kept so
+cross-references in this doc stay stable.
 
 ## 12. Defaults chosen (veto anytime)
 
@@ -471,7 +465,4 @@ no Cloudflare account and no real tokens, gated like `AGENTIC_E2E`. The
 ships or tests against it. The deployed Worker gets the same probe script run
 manually.
 
-**Phases**: (A) `worker/` + deploy docs, PAT secret, Link rewrite included —
-usable standalone; (B) engine mode selection + entrypoint branch + doctor +
-tests; (C) GitHub App tokens, repo allowlist for write ops, optional
-`agent proxy` helper (deploy/rotate), Cloudflare Access service-token gate.
+**Phases**: tracked in [ROADMAP.md](ROADMAP.md) ("Next").
