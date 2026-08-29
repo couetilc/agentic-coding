@@ -1,0 +1,11 @@
+#!/bin/sh
+# LOCAL DEV OVERRIDE (this is the agentic-coding repo itself): runs this repo's
+# own build instead of npx-ing the published package. `agent init` will
+# regenerate this back to the npx-based template if it's ever rerun — recheck
+# `git diff` after any future `agent init` and reapply if so.
+if [ "${IS_SANDBOX:-}" = "1" ]; then
+	echo "agent: already inside the agent container; host shim skipped." >&2
+	exit 0
+fi
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+exec node "$ROOT/dist/cli.js" "$@"

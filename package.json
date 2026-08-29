@@ -25,7 +25,9 @@
     "prepare": "npm run build",
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "link": "npm link",
+    "unlink": "npm unlink -g @couetilc/agentic-coding"
   },
   "license": "MIT",
   "publishConfig": {
