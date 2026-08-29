@@ -384,3 +384,94 @@ in `vitest.config.ts`, so `npm run coverage` is a hard gate. Policy keeping
   rename.
 - Base image stays on `node:24-slim`; projects needing a different node get it
   via overlay.
+
+## 13. GitHub credential proxy (Worker mode)
+
+Egress credential-injection: the real GitHub credential lives only in a
+Cloudflare Worker secret, never on the machine or in any container. The agent
+holds a low-value **gate key** that grants *use* of the proxy (revocable,
+auditable, rate-limitable at Cloudflare), never possession of the credential.
+Kills per-project PAT minting: a new project needs zero secret setup. The
+Worker is also a per-request policy/audit point no token scope can express.
+
+**Mode selection — default on, per-machine.** Proxy mode activates when
+`GH_PROXY_URL` + `GH_PROXY_KEY` are present in the merged env; their natural
+home is `~/.config/agentic-coding/env` (set once → every project on the
+machine). The existing project-overrides-host merge rule is the opt-out: a
+project sets `GH_PROXY_URL=` (empty) and `GH_TOKEN=...` in `./.env` to use the
+legacy path. Proxy wins when both are present. Preflight requires the proxy
+pair OR `GH_TOKEN`, naming both options and their files on failure. Both env
+files already flow into the container via `--env-file`, so no new launcher
+injection is needed.
+
+**Validated 2026-08-28** (local Node sim of the Worker + the real base image;
+`test/` will encode these as regression fixtures):
+
+- git smart HTTP round-trips a naive HTTP reverse proxy unmodified (public
+  clone; private clone with injected auth; no MITM/TLS tricks needed).
+- git endpoints require **Basic** auth (`base64("x-access-token:<tok>")`);
+  the REST API's `token` scheme is rejected there.
+- git sends credentials only after a 401 challenge — the gate's 401 MUST
+  carry `WWW-Authenticate: Basic`, or clients never retry with the key.
+- `gh` speaks GHES to any custom host: `GH_HOST=<worker-host>` +
+  `GH_ENTERPRISE_TOKEN=<gate key>` routes REST to `/api/v3/*` and GraphQL to
+  `/api/graphql`. `gh api`, `gh repo view`, `gh pr list`, `gh issue list` all
+  verified through the sim from `agentic-coding-base:0.1.1`.
+- `gh api --paginate` follows GitHub's absolute `Link:` headers straight to
+  `api.github.com`, bypassing the proxy (verified: page 2 of a private repo
+  404s). The Worker MUST rewrite `Link` response headers
+  (`https://api.github.com/` → `https://<worker-host>/api/v3/`).
+
+**Considered & rejected**: `HTTP_PROXY`/`HTTPS_PROXY` (git and gh both honor
+them, but a forward proxy only sees `CONNECT github.com:443` — TLS is
+end-to-end, so header injection is impossible without a MITM CA in the
+container, and CF Workers can't accept CONNECT tunnels anyway); local sidecar
+container (works, kept as fallback if Worker limits bite — adds a second
+container + docker network per launch); same-container credential helper
+(anything in the agent's process tree can read it — no real boundary).
+
+**Worker** (`worker/`, ~100 lines, no deps; not shipped in the npm package):
+
+- Gate: accept the key as `token`/`bearer` value or Basic password; 401 +
+  `WWW-Authenticate: Basic realm="gh-proxy"` otherwise.
+- Routes: `/api/v3/*` → `api.github.com/*`; `/api/graphql` →
+  `api.github.com/graphql`; everything else → `github.com` (git smart HTTP).
+- Swap: strip inbound auth; inject `token <real>` on API legs, Basic
+  `x-access-token:<real>` on git legs. Rewrite `Link` headers per above.
+- Secrets: `GATE_KEY` + v1 `GITHUB_TOKEN` (fine-grained PAT, now scoped to
+  all repos the proxy should reach). v2 upgrades to a GitHub App minting 1-h
+  installation tokens (repo scoping moves to the App installation).
+- `wrangler.toml` + README: one-time `wrangler deploy` + `wrangler secret put`.
+- Accepted limit: Workers cap request bodies (~100 MB) — a giant push fails;
+  clones stream fine.
+
+**Engine changes** (all seams already exist):
+
+| Where | Change |
+| --- | --- |
+| `src/env.ts` | requirement becomes proxy-pair OR `GH_TOKEN`; mode resolver |
+| `docker/entrypoint.sh` | when `GH_PROXY_URL` set: `insteadOf` both `https://github.com/` and `git@github.com:` → `https://x:${GH_PROXY_KEY}@<worker-host>/`; skip `gh auth setup-git`; export `GH_HOST` + `GH_ENTERPRISE_TOKEN` before the exec. Clone command, hooks, remotes unchanged — they still say `github.com`. |
+| `agent doctor` | print active mode (`proxy <url>` vs `token`), key redacted |
+| templates/README | proxy documented as the primary path, PAT as fallback |
+
+**Testing**: env/mode logic is pure → unit-tested under the coverage gate.
+The Worker is tested in the real runtime, not a sim:
+`@cloudflare/vitest-pool-workers` runs `worker/` tests inside workerd via
+vitest, with `cloudflare:test`'s `fetchMock` stubbing the github.com /
+api.github.com upstreams — gate 401 + challenge, routing, header swap, `Link`
+rewrite, all in-repo with no network and no account. `worker/` is its own
+workspace (own `package.json`, own vitest config — the Workers pool has no v8
+coverage support, so it sits outside the `src/**` 100% gate, like e2e).
+Real-client e2e drives the actual git + gh binaries from the base image
+against `wrangler dev --local-protocol https` (workerd again; the container
+trusts the dev cert via `SSL_CERT_FILE`/`GIT_SSL_CAINFO`) with
+`GH_PROXY_URL=https://host.docker.internal:<port>` — full proxy-mode e2e with
+no Cloudflare account and no real tokens, gated like `AGENTIC_E2E`. The
+2026-08-28 Node sim remains only as the concept-validation artifact; nothing
+ships or tests against it. The deployed Worker gets the same probe script run
+manually.
+
+**Phases**: (A) `worker/` + deploy docs, PAT secret, Link rewrite included —
+usable standalone; (B) engine mode selection + entrypoint branch + doctor +
+tests; (C) GitHub App tokens, repo allowlist for write ops, optional
+`agent proxy` helper (deploy/rotate), Cloudflare Access service-token gate.
