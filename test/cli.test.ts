@@ -459,3 +459,76 @@ describe('makeRealDeps', () => {
     expect(typeof d.exec).toBe('function');
   });
 });
+
+// --- doctor: cache volume ownership (issue #8 P1c) ---------------------------
+
+describe('run — doctor volume ownership', () => {
+  // Routes the doctor's docker calls: volumes exist, base image present,
+  // the stat probe reports the given uid per mountpoint.
+  function ownershipExec(uidFor: (path: string) => string) {
+    return async (
+      command: string,
+      args: string[],
+    ): Promise<{ code: number; stdout: string; stderr: string }> => {
+      if (command === 'docker' && args[0] === 'volume' && args[1] === 'inspect') {
+        // --format {{.Name}} listing: every requested volume exists.
+        const names = args.slice(4);
+        return { code: 0, stdout: `${names.join('\n')}\n`, stderr: '' };
+      }
+      if (command === 'docker' && args[0] === 'run' && args.includes('stat')) {
+        const paths = args.slice(args.indexOf('%u %n') + 1);
+        return {
+          code: 0,
+          stdout: paths.map((p) => `${uidFor(p)} ${p}`).join('\n'),
+          stderr: '',
+        };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+  }
+
+  it('reports node-owned mountpoints as ok', async () => {
+    const c = makeDeps({
+      argv: ['doctor'],
+      fileExists: (p) => p === '/proj/.agent/config.js',
+      importModule: async () => ({ default: VALID_CONFIG }),
+      exec: ownershipExec(() => '1000'),
+    });
+    expect(await run(c.deps)).toBe(0);
+    expect(c.out()).toContain('ownership   agentic-npm-cache — ok (node-owned)');
+    expect(c.out()).toContain('ownership   agentic-couetil-com-uv — ok (node-owned)');
+  });
+
+  it('warns with the remedy when a mountpoint is root-owned (interrupted launch)', async () => {
+    const c = makeDeps({
+      argv: ['doctor'],
+      fileExists: (p) => p === '/proj/.agent/config.js',
+      importModule: async () => ({ default: VALID_CONFIG }),
+      exec: ownershipExec((p) => (p === '/home/node/.npm' ? '0' : '1000')),
+    });
+    expect(await run(c.deps)).toBe(0);
+    expect(c.out()).toContain(
+      'WARNING     agentic-npm-cache mountpoint is uid 0, not node',
+    );
+    expect(c.out()).toContain('docker volume rm agentic-npm-cache');
+    expect(c.out()).toContain('ownership   agentic-couetil-com-uv — ok (node-owned)');
+  });
+
+  it('skips the probe when no cache volumes exist yet', async () => {
+    const c = makeDeps({
+      argv: ['doctor'],
+      fileExists: (p) => p === '/proj/.agent/config.js',
+      importModule: async () => ({ default: VALID_CONFIG }),
+      exec: async (command: string, args: string[]) => {
+        if (command === 'docker' && args[0] === 'volume' && args[1] === 'inspect') {
+          return { code: 1, stdout: '', stderr: 'Error: no such volume' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(await run(c.deps)).toBe(0);
+    expect(c.out()).toContain(
+      'ownership   (no cache volumes yet — created on first launch)',
+    );
+  });
+});

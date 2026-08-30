@@ -4,7 +4,9 @@ import {
   chownCacheArgs,
   makeTimer,
   runLaunch,
+  statCacheArgs,
   volumeCreateArgs,
+  volumeInspectArgs,
 } from '../src/launch.js';
 import type { RunSpec } from '../src/launch.js';
 import type {
@@ -270,6 +272,11 @@ function makeDeps(over: Partial<CliDeps> = {}): {
     if (command === 'git' && args[1] === 'user.email') {
       return { code: 0, stdout: 'connor@couetil.com\n', stderr: '' };
     }
+    // Default: cache volumes missing → the create+chown prep path runs.
+    // Warm-launch skip tests override this to exit 0.
+    if (command === 'docker' && args[0] === 'volume' && args[1] === 'inspect') {
+      return { code: 1, stdout: '', stderr: 'Error: no such volume' };
+    }
     return { code: 0, stdout: '', stderr: '' };
   };
   const deps: CliDeps = {
@@ -372,7 +379,10 @@ describe('runLaunch', () => {
     const { deps, calls } = makeDeps();
     expect(await runLaunch(deps)).toBe(0);
     const creates = calls.filter(
-      (c) => c.command === 'docker' && c.args[0] === 'volume',
+      (c) =>
+        c.command === 'docker' &&
+        c.args[0] === 'volume' &&
+        c.args[1] === 'create',
     );
     expect(creates.map((c) => c.args)).toEqual([
       volumeCreateArgs('agentic-npm-cache', 'couetil-com'),
@@ -669,6 +679,9 @@ describe('runLaunch', () => {
             stderr: '',
           };
         }
+        if (args[0] === 'volume' && args[1] === 'inspect') {
+          return { code: 1, stdout: '', stderr: 'Error: no such volume' };
+        }
         if (args[0] === 'run' && args[1] === '--rm') {
           return { code: 3, stdout: '', stderr: 'boom from docker' };
         }
@@ -689,6 +702,9 @@ describe('runLaunch', () => {
             stdout: args[1] === 'user.name' ? 'A\n' : 'a@b\n',
             stderr: '',
           };
+        }
+        if (args[0] === 'volume' && args[1] === 'inspect') {
+          return { code: 1, stdout: '', stderr: 'Error: no such volume' };
         }
         if (args[0] === 'run' && args[1] === '--rm') {
           return { code: null, stdout: '', stderr: '' };
@@ -811,5 +827,81 @@ describe('runLaunch — timing (issue #8)', () => {
     expect(err()).not.toContain('[agent-timing]');
     expect(dockerRun(calls).args.join(' ')).not.toContain('AGENT_TIMING');
     expect(dockerRun(calls).args.join(' ')).not.toContain('AGENT_LAUNCH_T0');
+  });
+});
+
+// --- warm-launch volume prep skip (issue #8 P1c) -----------------------------
+
+describe('volumeInspectArgs / statCacheArgs', () => {
+  it('assembles a batched volume existence check (golden)', () => {
+    expect(volumeInspectArgs(['agentic-npm-cache', 'agentic-p-uv'])).toEqual([
+      'volume',
+      'inspect',
+      'agentic-npm-cache',
+      'agentic-p-uv',
+    ]);
+  });
+
+  it('assembles the doctor ownership stat probe (golden)', () => {
+    expect(
+      statCacheArgs(
+        [{ volume: 'agentic-npm-cache', path: '/home/node/.npm' }],
+        'agentic-coding-base:1.2.3',
+      ),
+    ).toEqual([
+      'run',
+      '--rm',
+      '-v',
+      'agentic-npm-cache:/home/node/.npm',
+      '--entrypoint',
+      'stat',
+      'agentic-coding-base:1.2.3',
+      '-c',
+      '%u %n',
+      '/home/node/.npm',
+    ]);
+  });
+});
+
+describe('runLaunch — volume prep skip (issue #8 P1c)', () => {
+  it('skips volume creates AND the chown container when all volumes exist', async () => {
+    const calls: { command: string; args: string[] }[] = [];
+    const { deps } = makeDeps({
+      exec: async (command, args) => {
+        calls.push({ command, args });
+        if (command === 'git') {
+          return {
+            code: 0,
+            stdout: args[1] === 'user.name' ? 'A\n' : 'a@b\n',
+            stderr: '',
+          };
+        }
+        // Everything docker exits 0 — including the batched volume inspect,
+        // meaning every cache volume already exists (a warm launch).
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(await runLaunch(deps)).toBe(0);
+    const docker = (a0: string, a1?: string) =>
+      calls.some(
+        (c) =>
+          c.command === 'docker' &&
+          c.args[0] === a0 &&
+          (a1 === undefined || c.args[1] === a1),
+      );
+    // The batched existence check ran…
+    expect(docker('volume', 'inspect')).toBe(true);
+    // …and neither the labeled creates nor the chown container followed.
+    expect(docker('volume', 'create')).toBe(false);
+    expect(docker('run', '--rm')).toBe(false);
+    // The main run still happened.
+    expect(
+      calls.some(
+        (c) =>
+          c.command === 'docker' &&
+          c.args[0] === 'run' &&
+          (c.args[1] === '-it' || c.args[1] === '-i'),
+      ),
+    ).toBe(true);
   });
 });

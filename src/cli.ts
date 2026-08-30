@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { claudeAgent } from './agents/claude.js';
 import { codexAgent } from './agents/codex.js';
 import {
+  cacheMounts,
   cacheVolumeNames,
   errorMessage,
   imageName,
@@ -21,6 +22,7 @@ import {
 } from './config.js';
 import {
   baseStatusLine,
+  baseTag,
   clean,
   diskContainerLines,
   diskContainersArgs,
@@ -39,7 +41,7 @@ import {
   mergeEnv,
 } from './env.js';
 import { realExec } from './exec.js';
-import { runLaunch } from './launch.js';
+import { runLaunch, statCacheArgs } from './launch.js';
 import { realPortDeps } from './ports.js';
 import { maybeSweep, retentionStatusLines } from './retention.js';
 import { packageTemplatesDir, runInit } from './scaffold.js';
@@ -248,11 +250,74 @@ async function diskSection(
   } catch (err) {
     lines.push(errorMessage(err));
   }
+  try {
+    lines.push(...(await volumeOwnershipLines(deps, config)));
+  } catch (err) {
+    lines.push(`ownership   check failed: ${errorMessage(err)}`);
+  }
   lines.push(...retentionStatusLines(deps, config));
   lines.push(
     'build cache is daemon-global — reclaim with `docker builder prune` (not run by this tool)',
   );
   return { title: 'Disk', lines };
+}
+
+// Cache-volume mountpoint ownership (issue #8 P1c). The launcher skips its
+// chown prep when every volume exists, on the invariant "exists ⇒ already
+// chowned". A launch interrupted between docker's volume creation and the
+// chown breaks that invariant: the volume stays root-owned forever and later
+// launches fail with EACCES inside the container. This is the one place that
+// makes the failure diagnosable, with the remedy on the line.
+async function volumeOwnershipLines(
+  deps: CliDeps,
+  config: AgentConfig,
+): Promise<string[]> {
+  const mounts = cacheMounts(config);
+  // `--format {{.Name}}` lists the volumes that exist on stdout even when
+  // some are missing (exit 1); never `docker run -v` an absent volume here —
+  // that would create it unlabeled as a side effect.
+  const found = await dockerExec(
+    deps.exec,
+    ['volume', 'inspect', '--format', '{{.Name}}', ...mounts.map((m) => m.volume)],
+    { stdio: 'pipe' },
+  );
+  const existing = new Set(
+    found.stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s !== ''),
+  );
+  const present = mounts.filter((m) => existing.has(m.volume));
+  if (present.length === 0) {
+    return ['ownership   (no cache volumes yet — created on first launch)'];
+  }
+  const image = baseTag(deps.version);
+  const inspect = await dockerExec(deps.exec, ['image', 'inspect', image], {
+    stdio: 'pipe',
+  });
+  if (inspect.code !== 0) {
+    return ['ownership   (base image missing — checked after the first launch builds it)'];
+  }
+  const stat = await dockerExec(deps.exec, statCacheArgs(present, image), {
+    stdio: 'pipe',
+  });
+  if (stat.code !== 0) {
+    return [`ownership   check failed (docker exited ${stat.code ?? 'null'})`];
+  }
+  // stat -c '%u %n' → one "uid path" line per mountpoint; node is uid 1000.
+  const uidByPath = new Map<string, string>();
+  for (const line of stat.stdout.split('\n')) {
+    const m = line.trim().match(/^(\d+) (.+)$/);
+    if (m !== null) {
+      uidByPath.set(m[2], m[1]);
+    }
+  }
+  return present.map((mount) => {
+    const uid = uidByPath.get(mount.path);
+    return uid === '1000'
+      ? `ownership   ${mount.volume} — ok (node-owned)`
+      : `WARNING     ${mount.volume} mountpoint is uid ${uid ?? '(unknown)'}, not node — an interrupted launch likely skipped its chown; fix: \`docker volume rm ${mount.volume}\` (the next launch recreates it)`;
+  });
 }
 
 function agentAuthDeps(
