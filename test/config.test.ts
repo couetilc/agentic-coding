@@ -12,6 +12,7 @@ import {
   imageName,
   labels,
   loadConfig,
+  randomNameSuffix,
 } from '../src/config.js';
 import type { AgentConfig, ConfigDeps } from '../src/types.js';
 
@@ -242,11 +243,17 @@ describe('derivations', () => {
     expect(imageName('couetil-com')).toBe('agentic-couetil-com');
   });
 
-  it('containerName uses a reverse-sortable MMDD-HHMMSS stamp', () => {
+  it('containerName uses a reverse-sortable MMDD-HHMMSS stamp plus a suffix', () => {
     const now = new Date(2026, 0, 5, 3, 7, 9); // Jan 5, 03:07:09 local
-    expect(containerName('couetil-com', 'claude', now)).toBe(
-      'agentic-couetil-com-claude-0105-030709',
+    expect(containerName('couetil-com', 'claude', now, 'ab12')).toBe(
+      'agentic-couetil-com-claude-0105-030709-ab12',
     );
+  });
+
+  it('randomNameSuffix emits 4 hex chars (name-safe, seconds-tiebreaking)', () => {
+    for (let i = 0; i < 20; i++) {
+      expect(randomNameSuffix()).toMatch(/^[0-9a-f]{4}$/);
+    }
   });
 
   it('labels carry the project and package version', () => {

@@ -45,6 +45,7 @@ function makeDeps(over: Partial<CliDeps> = {}): Captured {
     home: '/home/me',
     isTTY: false,
     now: () => new Date(2026, 0, 5, 3, 7, 9),
+    nameSuffix: () => 'ab12',
     packageDockerDir: '/pkg/docker',
     packageTemplatesDir: '/pkg/templates',
     port: { tryListen: async () => true, randomInt: () => 50000 },
@@ -321,6 +322,7 @@ describe('makeRealDeps', () => {
     expect(d.home.length).toBeGreaterThan(0);
     expect(typeof d.isTTY).toBe('boolean');
     expect(d.now()).toBeInstanceOf(Date);
+    expect(d.nameSuffix()).toMatch(/^[0-9a-f]{4}$/);
     expect(d.packageDockerDir.replace(/\\/g, '/')).toMatch(/\/docker$/);
     expect(d.packageTemplatesDir.replace(/\\/g, '/')).toMatch(/\/templates$/);
     expect(typeof d.port.randomInt).toBe('function');

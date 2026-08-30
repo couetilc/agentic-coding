@@ -26,7 +26,7 @@ const VALID_CONFIG = {
 describe('buildRunArgs', () => {
   it('assembles a full claude launch argv (golden)', () => {
     const spec: RunSpec = {
-      containerName: 'agentic-couetil-com-claude-0105-030709',
+      containerName: 'agentic-couetil-com-claude-0105-030709-ab12',
       labels: [
         'agentic-coding.project=couetil-com',
         'agentic-coding.version=1.2.3',
@@ -70,7 +70,7 @@ describe('buildRunArgs', () => {
       'run',
       '-it',
       '--name',
-      'agentic-couetil-com-claude-0105-030709',
+      'agentic-couetil-com-claude-0105-030709-ab12',
       '--label',
       'agentic-coding.project=couetil-com',
       '--label',
@@ -245,6 +245,7 @@ function makeDeps(over: Partial<CliDeps> = {}): {
     home: '/home/me',
     isTTY: true,
     now: () => new Date(2026, 0, 5, 3, 7, 9),
+    nameSuffix: () => 'ab12',
     packageDockerDir: '/pkg/docker',
     packageTemplatesDir: '/pkg/templates',
     port: { tryListen: async () => true, randomInt: () => 50000 },
@@ -312,8 +313,8 @@ describe('runLaunch', () => {
     // xterm-256color here anyway — see the dedicated test below).
     expect(run.args).toContain('TERM=xterm-256color');
     expect(run.args).not.toContain('--rm');
-    // The name uses the injected clock.
-    expect(run.args).toContain('agentic-couetil-com-claude-0105-030709');
+    // The name uses the injected clock and suffix.
+    expect(run.args).toContain('agentic-couetil-com-claude-0105-030709-ab12');
     // stdio inherited for the interactive run.
     expect(run.options?.stdio).toBe('inherit');
 
