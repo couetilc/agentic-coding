@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
@@ -100,6 +100,31 @@ describe.skipIf(!RUN)('e2e: base image + entrypoint', () => {
     return execFileSync('docker', args, { encoding: 'utf8' });
   }
 
+  // Like runContainer, but returns stdout AND stderr separately — the timing
+  // marks (issue #8) go to stderr by contract, and the test must prove stdout
+  // stays clean for scripted `agent claude -p` runs.
+  function runContainerCapture(
+    env: Record<string, string>,
+    cmd: string[],
+  ): { stdout: string; stderr: string } {
+    const args = ['run', '--rm', '-v', `${bareRepo}:${bareRepo}:ro`];
+    const full: Record<string, string> = {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'safe.directory',
+      GIT_CONFIG_VALUE_0: '*',
+      ...env,
+    };
+    for (const [k, v] of Object.entries(full)) {
+      args.push('-e', `${k}=${v}`);
+    }
+    args.push(IMAGE, ...cmd);
+    const res = spawnSync('docker', args, { encoding: 'utf8' });
+    if (res.status !== 0) {
+      throw new Error(`docker run exited ${res.status}: ${res.stderr}`);
+    }
+    return { stdout: res.stdout, stderr: res.stderr };
+  }
+
   function baseEnv(): Record<string, string> {
     return {
       GIT_USER_NAME: 'E2E Tester',
@@ -146,6 +171,38 @@ describe.skipIf(!RUN)('e2e: base image + entrypoint', () => {
     expect(out).toContain('SKIP=true');
     expect(out).toContain('MODEL2=e2e-model');
     expect(out).toContain('E2E_DONE');
+  });
+
+  it('AGENT_TIMING=1: per-stage marks on stderr (stdout clean); silent without it', () => {
+    const timed = runContainerCapture(
+      {
+        ...baseEnv(),
+        AGENT_KIND: 'shell',
+        AGENT_TIMING: '1',
+        // The host and its containers share a kernel clock, so the entrypoint
+        // can report the docker create+start gap from this pre-run stamp.
+        AGENT_LAUNCH_T0: String(Date.now()),
+      },
+      ['true'],
+    );
+    for (const stage of [
+      'docker create+start',
+      'git identity + transport',
+      'workspace clone',
+      'agent CLI setup',
+      'surface instructions',
+      'project init.sh',
+      'entrypoint total',
+    ]) {
+      expect(timed.stderr).toContain(`[agent-timing] ${stage}`);
+    }
+    expect(timed.stdout).not.toContain('[agent-timing]');
+
+    const untimed = runContainerCapture(
+      { ...baseEnv(), AGENT_KIND: 'shell' },
+      ['true'],
+    );
+    expect(untimed.stderr).not.toContain('[agent-timing]');
   });
 
   it('codex-kind: writes config.toml from env, decodes CODEX_AUTH_B64, writes AGENTS.md', () => {

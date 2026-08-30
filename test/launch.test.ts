@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildRunArgs,
   chownCacheArgs,
+  makeTimer,
   runLaunch,
   volumeCreateArgs,
 } from '../src/launch.js';
@@ -53,6 +54,7 @@ describe('buildRunArgs', () => {
       gitUserEmail: 'connor@couetil.com',
       colorterm: 'truecolor',
       isTTY: true,
+      timingEnv: [],
       agentEnv: [
         '-e',
         'CLAUDE_MODEL=claude-fable-5',
@@ -133,6 +135,7 @@ describe('buildRunArgs', () => {
       gitUserEmail: 'a@b',
       colorterm: '',
       isTTY: true,
+      timingEnv: [],
       agentEnv: [],
       ports: [],
       image: 'img',
@@ -154,6 +157,7 @@ describe('buildRunArgs', () => {
       gitUserEmail: 'a@b',
       colorterm: '',
       isTTY: true,
+      timingEnv: [],
       agentEnv: [],
       ports: [],
       image: 'img',
@@ -735,5 +739,77 @@ describe('runLaunch', () => {
     expect(err()).toContain('install Docker');
     // One line, not a stack trace.
     expect(err()).not.toContain('    at ');
+  });
+});
+
+// --- launch timing (issue #8) -----------------------------------------------
+
+describe('makeTimer', () => {
+  it('is disabled and silent without AGENT_TIMING', () => {
+    const buf: string[] = [];
+    const timer = makeTimer({
+      env: {},
+      now: () => new Date(1000),
+      err: (t) => buf.push(t),
+    });
+    expect(timer.enabled).toBe(false);
+    timer.mark('anything');
+    expect(buf).toEqual([]);
+  });
+
+  it('prints per-stage deltas from the injected clock', () => {
+    const buf: string[] = [];
+    const times = [1000, 1400, 1650];
+    let i = 0;
+    const timer = makeTimer({
+      env: { AGENT_TIMING: '1' },
+      now: () => new Date(times[Math.min(i++, times.length - 1)]),
+      err: (t) => buf.push(t),
+    });
+    timer.mark('stage one');
+    timer.mark('stage two');
+    const text = buf.join('');
+    expect(text).toMatch(/\[agent-timing\] stage one\s+400 ms\n/);
+    expect(text).toMatch(/\[agent-timing\] stage two\s+250 ms\n/);
+  });
+});
+
+describe('runLaunch — timing (issue #8)', () => {
+  it('with AGENT_TIMING set: prints host stage marks and forwards timing env', async () => {
+    const { deps, calls, err } = makeDeps({
+      env: { TERM: 'xterm-256color', COLORTERM: 'truecolor', AGENT_TIMING: '1' },
+    });
+    expect(await runLaunch(deps)).toBe(0);
+    const text = err();
+    for (const stage of [
+      'config + env preflight',
+      'host git identity',
+      'retention sweep',
+      'base image check',
+      'overlay image',
+      'cache volume prep',
+    ]) {
+      expect(text).toContain(`[agent-timing] ${stage}`);
+    }
+    // The container gets AGENT_TIMING plus the host's pre-run wall clock (ms),
+    // spliced between COLORTERM and the agent env.
+    const run = dockerRun(calls);
+    expect(run.args).toContain('AGENT_TIMING=1');
+    const t0 = run.args.find((a) => a.startsWith('AGENT_LAUNCH_T0='));
+    expect(t0).toBe(`AGENT_LAUNCH_T0=${new Date(2026, 0, 5, 3, 7, 9).getTime()}`);
+    expect(run.args.indexOf('AGENT_TIMING=1')).toBeGreaterThan(
+      run.args.indexOf('COLORTERM=truecolor'),
+    );
+    expect(run.args.indexOf('AGENT_TIMING=1')).toBeLessThan(
+      run.args.indexOf('CLAUDE_MODEL=claude-fable-5'),
+    );
+  });
+
+  it('without AGENT_TIMING: no marks on stderr, no timing env on the argv', async () => {
+    const { deps, calls, err } = makeDeps();
+    expect(await runLaunch(deps)).toBe(0);
+    expect(err()).not.toContain('[agent-timing]');
+    expect(dockerRun(calls).args.join(' ')).not.toContain('AGENT_TIMING');
+    expect(dockerRun(calls).args.join(' ')).not.toContain('AGENT_LAUNCH_T0');
   });
 });
