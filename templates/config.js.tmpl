@@ -24,4 +24,8 @@ export default {
   // Extra named docker volumes mounted for cross-container caching. The npm
   // cache is always mounted; add e.g. 'uv' for Python projects.
   caches: [],
+
+  // Days before this project's stopped containers and superseded image tags
+  // are auto-removed at launch (throttled to once per 24h). 0 disables.
+  retentionDays: 30,
 };

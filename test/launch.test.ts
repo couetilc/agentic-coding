@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildRunArgs, chownCacheArgs, runLaunch } from '../src/launch.js';
+import {
+  buildRunArgs,
+  chownCacheArgs,
+  runLaunch,
+  volumeCreateArgs,
+} from '../src/launch.js';
 import type { RunSpec } from '../src/launch.js';
 import type {
   CliDeps,
@@ -204,6 +209,32 @@ describe('chownCacheArgs', () => {
   });
 });
 
+// --- volumeCreateArgs (labeled cache volumes) --------------------------------
+
+describe('volumeCreateArgs', () => {
+  it('labels a project-scoped volume with managed + project', () => {
+    expect(volumeCreateArgs('agentic-couetil-com-uv', 'couetil-com')).toEqual([
+      'volume',
+      'create',
+      '--label',
+      'agentic-coding.managed=1',
+      '--label',
+      'agentic-coding.project=couetil-com',
+      'agentic-couetil-com-uv',
+    ]);
+  });
+
+  it('labels the shared npm cache with managed only (it belongs to no project)', () => {
+    expect(volumeCreateArgs('agentic-npm-cache', 'couetil-com')).toEqual([
+      'volume',
+      'create',
+      '--label',
+      'agentic-coding.managed=1',
+      'agentic-npm-cache',
+    ]);
+  });
+});
+
 // --- runLaunch orchestration (exec stubbed) --------------------------------
 
 const CONFIG_PATH = '/proj/.agent/config.js';
@@ -330,6 +361,91 @@ describe('runLaunch', () => {
       ),
     );
     expect(calls.indexOf(prep)).toBeLessThan(calls.indexOf(run));
+  });
+
+  it('pre-creates labeled cache volumes before the chown pre-step', async () => {
+    const { deps, calls } = makeDeps();
+    expect(await runLaunch(deps)).toBe(0);
+    const creates = calls.filter(
+      (c) => c.command === 'docker' && c.args[0] === 'volume',
+    );
+    expect(creates.map((c) => c.args)).toEqual([
+      volumeCreateArgs('agentic-npm-cache', 'couetil-com'),
+      volumeCreateArgs('agentic-couetil-com-uv', 'couetil-com'),
+    ]);
+    const prep = chownPreStep(calls);
+    expect(calls.indexOf(creates[1])).toBeLessThan(calls.indexOf(prep));
+  });
+
+  it('runs the retention sweep at launch and writes the throttle marker', async () => {
+    const writes: Record<string, string> = {};
+    const { deps, calls } = makeDeps({
+      writeTextFile: (path, content) => {
+        writes[path] = content;
+      },
+    });
+    expect(await runLaunch(deps)).toBe(0);
+    // The sweep's label-scoped listing ran (empty stdout → nothing to remove).
+    expect(
+      calls.some(
+        (c) =>
+          c.command === 'docker' &&
+          c.args[0] === 'ps' &&
+          c.args.includes('{{.ID}}\t{{.CreatedAt}}\t{{.Status}}'),
+      ),
+    ).toBe(true);
+    expect(Object.keys(writes)).toEqual([
+      '/home/me/.config/agentic-coding/sweep-couetil-com.json',
+    ]);
+  });
+
+  it('skips the sweep entirely when the marker is fresh (throttled)', async () => {
+    const markerPath = '/home/me/.config/agentic-coding/sweep-couetil-com.json';
+    const nowMs = new Date(2026, 0, 5, 3, 7, 9).getTime();
+    const { deps, calls } = makeDeps({
+      readTextFile: (path) => {
+        if (path === markerPath) {
+          return JSON.stringify({ lastSweepAt: nowMs - 1000 });
+        }
+        if (path === '/proj/.env') return 'GH_TOKEN=gh';
+        if (path === '/home/me/.config/agentic-coding/env')
+          return 'CLAUDE_CODE_OAUTH_TOKEN=oauth';
+        return undefined;
+      },
+    });
+    expect(await runLaunch(deps)).toBe(0);
+    expect(calls.some((c) => c.command === 'docker' && c.args[0] === 'ps')).toBe(
+      false,
+    );
+  });
+
+  it('a sweep failure never blocks the launch (marker records the error)', async () => {
+    const writes: Record<string, string> = {};
+    const { deps } = makeDeps({
+      writeTextFile: (path, content) => {
+        writes[path] = content;
+      },
+      exec: async (command, args) => {
+        if (command === 'git') {
+          return {
+            code: 0,
+            stdout: args[1] === 'user.name' ? 'A\n' : 'a@b\n',
+            stderr: '',
+          };
+        }
+        // Only the sweep's listing explodes; everything else succeeds.
+        if (args[0] === 'ps') {
+          throw new Error('spawn docker ENOENT');
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(await runLaunch(deps)).toBe(0);
+    expect(
+      JSON.parse(
+        writes['/home/me/.config/agentic-coding/sweep-couetil-com.json'],
+      ).lastError,
+    ).toContain('docker is not available');
   });
 
   it('hardcodes TERM=xterm-256color even when the host TERM differs', async () => {

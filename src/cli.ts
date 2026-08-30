@@ -21,6 +21,13 @@ import {
 import {
   baseStatusLine,
   clean,
+  diskContainerLines,
+  diskContainersArgs,
+  diskImageLines,
+  diskImagesArgs,
+  diskVolumeLines,
+  diskVolumesArgs,
+  dockerExec,
   overlayStatusLine,
   packageDockerDir,
 } from './docker.js';
@@ -33,6 +40,7 @@ import {
 import { realExec } from './exec.js';
 import { runLaunch } from './launch.js';
 import { realPortDeps } from './ports.js';
+import { maybeSweep, retentionStatusLines } from './retention.js';
 import { packageTemplatesDir, runInit } from './scaffold.js';
 import type { AgentAuthDeps, AgentConfig, CliDeps } from './types.js';
 
@@ -49,7 +57,7 @@ Commands:
   shell  [cmd...]    open a shell in the container instead of an agent
   clean              remove this project's exited containers + rebuild images
   init               scaffold/upgrade .agent/ in the current repo
-  doctor             print resolved config, image status, and env preflight
+  doctor             print resolved config, image/disk status, and env preflight
 
 Options:
   -h, --help         show this help
@@ -110,7 +118,11 @@ async function runClean(deps: CliDeps): Promise<number> {
     return 1;
   }
   try {
-    return await clean(deps, config, deps.version);
+    const code = await clean(deps, config, deps.version);
+    // Unthrottled retention sweep AFTER the rm + rebuild, when superseded
+    // image tags are least likely to still be pinned by kept containers.
+    await maybeSweep(deps, config, deps.version, true);
+    return code;
   } catch (err) {
     deps.err(`error: ${errorMessage(err)}\n`);
     return 1;
@@ -167,6 +179,7 @@ async function doctor(deps: CliDeps): Promise<number> {
     sections.push(configSection(config, deps.version));
   }
   sections.push(await imagesSection(deps, config));
+  sections.push(await diskSection(deps, config));
   sections.push(environmentSection(deps, config));
 
   deps.out(renderSections(sections));
@@ -192,6 +205,47 @@ async function imagesSection(
   } catch (err) {
     return { title: 'Images', lines: [errorMessage(err)] };
   }
+}
+
+// What this project's artifacts cost on disk (issue #5): kept containers,
+// image tags, and cache volume sizes — plus the retention/sweep status and the
+// one reclaim this tool deliberately does NOT run itself (build cache is
+// daemon-global and unlabeled, so pruning it would touch other projects).
+async function diskSection(
+  deps: CliDeps,
+  config: AgentConfig | undefined,
+): Promise<Section> {
+  if (config === undefined) {
+    return { title: 'Disk', lines: ['(config not loaded)'] };
+  }
+  const lines: string[] = [];
+  try {
+    const ps = await dockerExec(deps.exec, diskContainersArgs(config.project), {
+      stdio: 'pipe',
+    });
+    lines.push(...diskContainerLines(ps.stdout));
+    for (const repo of ['agentic-coding-base', imageName(config.project)]) {
+      const images = await dockerExec(deps.exec, diskImagesArgs(repo), {
+        stdio: 'pipe',
+      });
+      lines.push(...diskImageLines(images.stdout));
+    }
+    const df = await dockerExec(deps.exec, diskVolumesArgs(), {
+      stdio: 'pipe',
+    });
+    if (df.code === 0) {
+      lines.push(...diskVolumeLines(df.stdout, cacheVolumeNames(config)));
+    } else {
+      lines.push('volumes     (sizes unavailable — run `docker system df -v`)');
+    }
+  } catch (err) {
+    lines.push(errorMessage(err));
+  }
+  lines.push(...retentionStatusLines(deps, config));
+  lines.push(
+    'build cache is daemon-global — reclaim with `docker builder prune` (not run by this tool)',
+  );
+  return { title: 'Disk', lines };
 }
 
 function agentAuthDeps(

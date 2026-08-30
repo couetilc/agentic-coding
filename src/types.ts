@@ -21,6 +21,7 @@ export interface AgentConfig {
   agents: AgentsConfig;
   requiredEnv: string[];
   caches: string[];
+  retentionDays: number;
 }
 
 // --- OS boundary seams -----------------------------------------------------
@@ -88,6 +89,19 @@ export interface ScaffoldDeps {
   makeExecutable: (path: string) => void;
   mkdirp: (path: string) => void;
   out: (text: string) => void;
+  err: (text: string) => void;
+}
+
+// Everything the retention sweep (src/retention.ts) touches: docker via the
+// exec seam, the throttle-marker file via the fs seams, and the injected clock.
+// CliDeps is a superset, so cli/launch hand their deps object straight in.
+export interface RetentionDeps {
+  exec: ExecFn;
+  home: string;
+  now: () => Date;
+  readTextFile: (path: string) => string | undefined;
+  writeTextFile: (path: string, content: string) => void;
+  mkdirp: (path: string) => void;
   err: (text: string) => void;
 }
 
