@@ -197,8 +197,10 @@ export default {
 ```
 
 Derivations: image `agentic-<project>`, containers
-`agentic-<project>-<agent>-<MMDD-HHMMSS>` (reverse-lexical-sortable, as in
-news), labels `agentic-coding.project=<project>` and
+`agentic-<project>-<agent>-<MMDD-HHMMSS>-<4 random hex>`
+(reverse-lexical-sortable, as in news; the suffix keeps same-second launches
+and kept year-old same-date containers from colliding on the name, #6),
+labels `agentic-coding.project=<project>` and
 `agentic-coding.version=<pkg version>`, volumes `agentic-<project>-<cache>`
 except the npm cache which stays shared across projects
 (`agentic-npm-cache`) to keep installs fast, matching news behavior.

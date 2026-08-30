@@ -17,6 +17,7 @@ import {
   imageName,
   labels,
   loadConfig,
+  randomNameSuffix,
 } from './config.js';
 import {
   baseStatusLine,
@@ -277,6 +278,7 @@ export function makeRealDeps(): CliDeps {
     // undefined, so coerce. Drives whether `docker run` gets `-t` (launch.ts).
     isTTY: process.stdout.isTTY === true,
     now: () => new Date(),
+    nameSuffix: randomNameSuffix,
     packageDockerDir: packageDockerDir(),
     packageTemplatesDir: packageTemplatesDir(),
     port: realPortDeps,

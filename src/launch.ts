@@ -234,7 +234,12 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
         ? args
         : ['bash'];
 
-    const name = containerName(config.project, command, deps.now());
+    const name = containerName(
+      config.project,
+      command,
+      deps.now(),
+      deps.nameSuffix(),
+    );
     deps.err(`Starting ${name} (kept after exit; \`agent clean\` to prune)\n`);
     if (ports.length > 0) {
       // The dev server must ALSO bind 0.0.0.0 inside (npm run dev -- --host) or

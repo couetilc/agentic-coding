@@ -156,6 +156,9 @@ export interface CliDeps extends ConfigDeps {
   isTTY: boolean;
   // Wall clock, injected so container-name timestamps are deterministic in tests.
   now: () => Date;
+  // Random container-name suffix (collision-proofing beyond the seconds-
+  // resolution stamp), injected so names are deterministic in tests.
+  nameSuffix: () => string;
   // Read a file's UTF-8 text, or undefined if it does not exist.
   readTextFile: (path: string) => string | undefined;
   // Write a file's UTF-8 text (scaffolder); create a directory and parents;

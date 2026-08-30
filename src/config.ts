@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type {
@@ -241,14 +242,26 @@ export function imageName(project: string): string {
   return `agentic-${project}`;
 }
 
-// `agentic-<project>-<agent>-<MMDD-HHMMSS>`. The zero-padded local timestamp
-// makes a reverse lexical sort of names newest-first, matching news behavior.
+// `agentic-<project>-<agent>-<MMDD-HHMMSS>-<suffix>`. The zero-padded local
+// timestamp makes a reverse lexical sort of names newest-first, matching news
+// behavior. The random suffix makes the name collision-proof: containers are
+// kept after exit, so the stamp alone collides across two same-second launches
+// or a kept container from the same date a year earlier (docker then refuses
+// the run with an opaque "Conflict" error, #6).
 export function containerName(
   project: string,
   agent: string,
   now: Date,
+  suffix: string,
 ): string {
-  return `agentic-${project}-${agent}-${formatStamp(now)}`;
+  return `agentic-${project}-${agent}-${formatStamp(now)}-${suffix}`;
+}
+
+// Real suffix generator wired into CliDeps.nameSuffix (injected so names stay
+// deterministic in tests). Four hex chars — collisions would need two launches
+// of the same agent in the same second to also draw the same 1-in-65536 value.
+export function randomNameSuffix(): string {
+  return randomBytes(2).toString('hex');
 }
 
 function formatStamp(now: Date): string {
