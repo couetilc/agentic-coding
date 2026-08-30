@@ -7,6 +7,12 @@ import {
   clean,
   cleanListArgs,
   cleanRmArgs,
+  diskContainerLines,
+  diskContainersArgs,
+  diskImageLines,
+  diskImagesArgs,
+  diskVolumeLines,
+  diskVolumesArgs,
   dockerExec,
   ensureBaseImage,
   ensureOverlayImage,
@@ -78,9 +84,11 @@ describe('pure argv builders', () => {
     expect(inspectArgs('t')).toEqual(['image', 'inspect', 't']);
   });
 
-  it('buildArgs, plain and fresh', () => {
+  it('buildArgs, plain and fresh (both labeled managed)', () => {
     expect(buildArgs('/pkg/docker', 'base:1')).toEqual([
       'build',
+      '--label',
+      'agentic-coding.managed=1',
       '-t',
       'base:1',
       '/pkg/docker',
@@ -89,6 +97,8 @@ describe('pure argv builders', () => {
       'build',
       '--pull',
       '--no-cache',
+      '--label',
+      'agentic-coding.managed=1',
       '-t',
       'base:1',
       '/pkg/docker',
@@ -98,6 +108,8 @@ describe('pure argv builders', () => {
   it('overlayBuildArgs passes BASE build-arg and context, plain and fresh', () => {
     expect(overlayBuildArgs('/proj/.agent', 'ov:1', 'base:1')).toEqual([
       'build',
+      '--label',
+      'agentic-coding.managed=1',
       '--build-arg',
       'BASE=base:1',
       '-t',
@@ -107,6 +119,8 @@ describe('pure argv builders', () => {
     expect(overlayBuildArgs('/proj/.agent', 'ov:1', 'base:1', true)).toEqual([
       'build',
       '--no-cache',
+      '--label',
+      'agentic-coding.managed=1',
       '--build-arg',
       'BASE=base:1',
       '-t',
@@ -315,6 +329,99 @@ describe('clean', () => {
     );
     const d = makeDeps({ exec: f.exec });
     expect(await clean(d.deps, CONFIG, V)).toBe(1);
+  });
+});
+
+describe('doctor Disk helpers', () => {
+  it('diskContainersArgs lists the project label with status + size', () => {
+    expect(diskContainersArgs('couetil-com')).toEqual([
+      'ps',
+      '-as',
+      '--filter',
+      'label=agentic-coding.project=couetil-com',
+      '--format',
+      '{{.Names}}\t{{.Status}}\t{{.Size}}',
+    ]);
+  });
+
+  it('diskImagesArgs lists a repo with ref + size', () => {
+    expect(diskImagesArgs('agentic-coding-base')).toEqual([
+      'images',
+      'agentic-coding-base',
+      '--format',
+      '{{.Repository}}:{{.Tag}}\t{{.Size}}',
+    ]);
+  });
+
+  it('diskVolumesArgs narrows system df -v to the volumes JSON', () => {
+    expect(diskVolumesArgs()).toEqual([
+      'system',
+      'df',
+      '-v',
+      '--format',
+      '{{json .Volumes}}',
+    ]);
+  });
+
+  it('diskContainerLines renders rows, and (none kept) when empty', () => {
+    expect(
+      diskContainerLines('agentic-p-claude-0101\tExited (0) 2 days ago\t12MB\n'),
+    ).toEqual(['container   agentic-p-claude-0101 — Exited (0) 2 days ago — 12MB']);
+    expect(diskContainerLines('\n')).toEqual(['containers  (none kept)']);
+  });
+
+  it('diskImageLines renders rows and nothing for an empty repo', () => {
+    expect(
+      diskImageLines('agentic-coding-base:0.1.0\t812MB\nagentic-coding-base:0.1.1\t815MB\n'),
+    ).toEqual([
+      'image       agentic-coding-base:0.1.0 — 812MB',
+      'image       agentic-coding-base:0.1.1 — 815MB',
+    ]);
+    expect(diskImageLines('')).toEqual([]);
+  });
+
+  it('diskVolumeLines reads API-struct byte sizes across every magnitude', () => {
+    const stdout = JSON.stringify([
+      { Name: 'a', UsageData: { Size: 500 } },
+      { Name: 'b', UsageData: { Size: 5_000 } },
+      { Name: 'c', UsageData: { Size: 5_000_000 } },
+      { Name: 'd', UsageData: { Size: 5_000_000_000 } },
+    ]);
+    expect(diskVolumeLines(stdout, ['a', 'b', 'c', 'd'])).toEqual([
+      'volume      a — 500B',
+      'volume      b — 5.0kB',
+      'volume      c — 5.0MB',
+      'volume      d — 5.0GB',
+    ]);
+  });
+
+  it('diskVolumeLines falls back to the CLI Size string, then ?, and marks missing volumes', () => {
+    const stdout = JSON.stringify([
+      { Name: 'agentic-npm-cache', Size: '1.2GB' },
+      { Name: 'nosize', UsageData: {}, Size: '3MB' },
+      { Name: 'weird', UsageData: null },
+    ]);
+    expect(
+      diskVolumeLines(stdout, [
+        'agentic-npm-cache',
+        'nosize',
+        'weird',
+        'agentic-p-uv',
+      ]),
+    ).toEqual([
+      'volume      agentic-npm-cache — 1.2GB',
+      'volume      nosize — 3MB',
+      'volume      weird — ?',
+      'volume      agentic-p-uv — (not created)',
+    ]);
+  });
+
+  it('diskVolumeLines reports unavailable on non-JSON and non-array output', () => {
+    const unavailable = [
+      'volumes     (sizes unavailable — run `docker system df -v`)',
+    ];
+    expect(diskVolumeLines('not json', ['a'])).toEqual(unavailable);
+    expect(diskVolumeLines('{"Name":"a"}', ['a'])).toEqual(unavailable);
   });
 });
 

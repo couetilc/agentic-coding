@@ -18,6 +18,7 @@ import {
   preflightErrors,
 } from './env.js';
 import { pickPorts } from './ports.js';
+import { maybeSweep } from './retention.js';
 import type { AgentConfig, AgentModule, CliDeps } from './types.js';
 
 // Port of news's agent_launch (PLAN.md §5 "Launch flow"). The full docker-run
@@ -114,6 +115,19 @@ export function chownCacheArgs(mounts: CacheMount[], image: string): string[] {
   ];
 }
 
+// Pre-create each cache volume with labels so the tool's volumes are
+// enumerable (`docker run -v` would create them unlabeled). The shared npm
+// cache belongs to no single project, so it carries only the managed label.
+// Best-effort: creating an existing volume is a no-op, and on any failure
+// `docker run -v` still auto-creates the volume.
+export function volumeCreateArgs(volume: string, project: string): string[] {
+  const labels = ['--label', 'agentic-coding.managed=1'];
+  if (volume !== 'agentic-npm-cache') {
+    labels.push('--label', `agentic-coding.project=${project}`);
+  }
+  return ['volume', 'create', ...labels, volume];
+}
+
 // Host git identity — the entrypoint refuses to start without it (§5), so the
 // launcher preflights it here for a clearer error before docker run.
 async function gitConfigValue(deps: CliDeps, key: string): Promise<string> {
@@ -189,6 +203,10 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
       return 1;
     }
 
+    // Retention sweep (issue #5): best-effort and silent (throttled to once
+    // per 24h via the marker file); frees disk before the builds below.
+    await maybeSweep(deps, config, deps.version);
+
     // Build base (cached; prints first-build vs cached) then overlay if present.
     const baseCode = await ensureBaseImage(deps, deps.version);
     if (baseCode !== 0) {
@@ -201,8 +219,16 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
 
     // Make every cache mountpoint node-writable BEFORE the main run: a fresh
     // named volume at a path the image doesn't pre-create would otherwise be
-    // root-owned for good (see chownCacheArgs).
+    // root-owned for good (see chownCacheArgs). Volumes are pre-created with
+    // labels first (see volumeCreateArgs); the result is ignored on purpose.
     const mounts = cacheMounts(config);
+    for (const mount of mounts) {
+      await dockerExec(
+        deps.exec,
+        volumeCreateArgs(mount.volume, config.project),
+        { stdio: 'pipe' },
+      );
+    }
     const prep = await dockerExec(
       deps.exec,
       chownCacheArgs(mounts, overlay.image),

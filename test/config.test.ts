@@ -53,8 +53,11 @@ async function expectError(
 }
 
 describe('loadConfig — load boundary', () => {
-  it('accepts a valid config and normalizes it', async () => {
-    await expect(loadConfig(deps(VALID))).resolves.toEqual(VALID);
+  it('accepts a valid config and normalizes it (retentionDays defaults to 30)', async () => {
+    await expect(loadConfig(deps(VALID))).resolves.toEqual({
+      ...VALID,
+      retentionDays: 30,
+    });
   });
 
   it('errors when .agent/config.js is absent', async () => {
@@ -223,6 +226,30 @@ describe('loadConfig — field validation', () => {
     await expectError(
       loadWith({ caches: ['Not Slug'] }),
       /caches\[0\] "Not Slug" is not a valid slug/,
+    );
+  });
+
+  it('accepts explicit retentionDays, including 0 (disabled)', async () => {
+    await expect(loadWith({ retentionDays: 45 })).resolves.toMatchObject({
+      retentionDays: 45,
+    });
+    await expect(loadWith({ retentionDays: 0 })).resolves.toMatchObject({
+      retentionDays: 0,
+    });
+  });
+
+  it('rejects non-integer, negative, and non-number retentionDays', async () => {
+    await expectError(
+      loadWith({ retentionDays: 1.5 }),
+      /retentionDays must be a non-negative integer/,
+    );
+    await expectError(
+      loadWith({ retentionDays: -1 }),
+      /retentionDays must be a non-negative integer/,
+    );
+    await expectError(
+      loadWith({ retentionDays: '30' }),
+      /retentionDays must be a non-negative integer.*got "30"/,
     );
   });
 });

@@ -12,6 +12,11 @@ import type {
 // version is refused with an "upgrade the CLI" message (PLAN.md §1).
 export const SUPPORTED_SCHEMA_VERSION = 1;
 
+// Default age horizon (days) for the launch-time retention sweep (issue #5):
+// this project's stopped containers and superseded image tags older than this
+// are removed. Overridable per project via `retentionDays`; 0 disables.
+export const DEFAULT_RETENTION_DAYS = 30;
+
 const CONFIG_REL = '.agent/config.js';
 
 // Docker artifact names (project, cache names) must be safe slugs; `repo` must
@@ -81,7 +86,20 @@ function validateConfig(raw: unknown): AgentConfig {
     agents: validateAgents(c.agents),
     requiredEnv: validateStringArray(c.requiredEnv, 'requiredEnv'),
     caches: validateCaches(c.caches),
+    retentionDays: validateRetentionDays(c.retentionDays),
   };
+}
+
+function validateRetentionDays(value: unknown): number {
+  if (value === undefined) {
+    return DEFAULT_RETENTION_DAYS;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new ConfigError(
+      `retentionDays must be a non-negative integer number of days (0 disables the launch-time sweep), got ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
 }
 
 function validateSchemaVersion(value: unknown): number {

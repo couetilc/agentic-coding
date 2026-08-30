@@ -72,6 +72,11 @@ export function inspectArgs(tag: string): string[] {
   return ['image', 'inspect', tag];
 }
 
+// Every image this tool builds carries this label so its artifacts stay
+// enumerable/filterable (retention can still match pre-label images by their
+// deterministic repo names).
+export const MANAGED_LABEL = 'agentic-coding.managed=1';
+
 // `--pull --no-cache` is added only for `agent clean`, which deliberately
 // rebuilds from scratch so the baked CLIs don't freeze at first-build latest.
 export function buildArgs(
@@ -82,6 +87,8 @@ export function buildArgs(
   return [
     'build',
     ...(fresh ? ['--pull', '--no-cache'] : []),
+    '--label',
+    MANAGED_LABEL,
     '-t',
     tag,
     context,
@@ -101,6 +108,8 @@ export function overlayBuildArgs(
   return [
     'build',
     ...(fresh ? ['--no-cache'] : []),
+    '--label',
+    MANAGED_LABEL,
     '--build-arg',
     `BASE=${base}`,
     '-t',
@@ -231,6 +240,101 @@ export async function clean(
     return overlay.code ?? 1;
   }
   return 0;
+}
+
+// --- doctor Disk section ----------------------------------------------------
+
+// Kept containers for this project, with status (which carries the age) and
+// on-disk size (`-s`).
+export function diskContainersArgs(project: string): string[] {
+  return [
+    'ps',
+    '-as',
+    '--filter',
+    `label=agentic-coding.project=${project}`,
+    '--format',
+    '{{.Names}}\t{{.Status}}\t{{.Size}}',
+  ];
+}
+
+// Every locally-kept tag of one of this tool's image repos, with its size.
+export function diskImagesArgs(repo: string): string[] {
+  return ['images', repo, '--format', '{{.Repository}}:{{.Tag}}\t{{.Size}}'];
+}
+
+// `docker system df -v` is the only way to read volume sizes; the template
+// narrows the output to just the volumes array, as JSON.
+export function diskVolumesArgs(): string[] {
+  return ['system', 'df', '-v', '--format', '{{json .Volumes}}'];
+}
+
+export function diskContainerLines(stdout: string): string[] {
+  const rows = stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '');
+  if (rows.length === 0) {
+    return ['containers  (none kept)'];
+  }
+  return rows.map((row) => `container   ${row.split('\t').join(' — ')}`);
+}
+
+export function diskImageLines(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '')
+    .map((row) => `image       ${row.split('\t').join(' — ')}`);
+}
+
+// Docker reports sizes in decimal units; match that here.
+function humanBytes(n: number): string {
+  if (n >= 1e9) {
+    return `${(n / 1e9).toFixed(1)}GB`;
+  }
+  if (n >= 1e6) {
+    return `${(n / 1e6).toFixed(1)}MB`;
+  }
+  if (n >= 1e3) {
+    return `${(n / 1e3).toFixed(1)}kB`;
+  }
+  return `${n}B`;
+}
+
+// One line per cache volume this config mounts. The df JSON differs by docker
+// version: API structs carry byte counts under UsageData.Size, CLI-formatted
+// rows a human string under Size — read whichever is there.
+export function diskVolumeLines(stdout: string, names: string[]): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    parsed = undefined;
+  }
+  if (!Array.isArray(parsed)) {
+    return ['volumes     (sizes unavailable — run `docker system df -v`)'];
+  }
+  const rows = parsed as {
+    Name?: unknown;
+    Size?: unknown;
+    UsageData?: { Size?: unknown } | null;
+  }[];
+  return names.map((name) => {
+    const row = rows.find((r) => r.Name === name);
+    if (row === undefined) {
+      return `volume      ${name} — (not created)`;
+    }
+    const usage = row.UsageData;
+    const size =
+      typeof usage === 'object' &&
+      usage !== null &&
+      typeof usage.Size === 'number'
+        ? humanBytes(usage.Size)
+        : typeof row.Size === 'string'
+          ? row.Size
+          : '?';
+    return `volume      ${name} — ${size}`;
+  });
 }
 
 // --- doctor Images section ------------------------------------------------

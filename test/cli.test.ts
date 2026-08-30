@@ -134,6 +134,34 @@ describe('run — dispatch', () => {
     ]);
   });
 
+  it('clean follows the rebuild with an unthrottled retention sweep', async () => {
+    const calls: string[][] = [];
+    const writes: string[] = [];
+    const c = makeDeps({
+      argv: ['clean'],
+      fileExists: (p) => p === '/proj/.agent/config.js',
+      importModule: async () => ({ default: VALID_CONFIG }),
+      writeTextFile: (path) => {
+        writes.push(path);
+      },
+      exec: async (_cmd, args) => {
+        calls.push(args);
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(await run(c.deps)).toBe(0);
+    // The sweep's own listing runs AFTER the rebuild (last build call).
+    const sweepPs = calls.findIndex(
+      (a) => a[0] === 'ps' && a.includes('{{.ID}}\t{{.CreatedAt}}\t{{.Status}}'),
+    );
+    const lastBuild = calls.map((a) => a[0]).lastIndexOf('build');
+    expect(sweepPs).toBeGreaterThan(lastBuild);
+    // Force mode: it swept (and stamped the marker) despite no marker existing.
+    expect(writes).toEqual([
+      '/home/me/.config/agentic-coding/sweep-couetil-com.json',
+    ]);
+  });
+
   it('clean prints one actionable line and exits 1 when docker cannot be spawned', async () => {
     const c = makeDeps({
       argv: ['clean'],
@@ -264,6 +292,84 @@ describe('run — doctor', () => {
     const text = c.out();
     expect(text).toContain('Config');
     expect(text).toContain('run `agent init`');
+    // The Disk section renders too, without a config to scope it.
+    expect(text).toContain('(config not loaded)');
+  });
+
+  it('renders the Disk section: containers, images, volumes, retention, prune hint', async () => {
+    const markerPath = '/home/me/.config/agentic-coding/sweep-couetil-com.json';
+    const c = makeDeps({
+      argv: ['doctor'],
+      fileExists: (p) => p === '/proj/.agent/config.js',
+      importModule: async () => ({ default: VALID_CONFIG }),
+      readTextFile: (path) =>
+        path === markerPath
+          ? JSON.stringify({
+              lastSweepAt: Date.parse('2026-08-30T12:00:00.000Z'),
+              lastError: 'docker rm exited 1',
+            })
+          : undefined,
+      exec: async (_cmd, args) => {
+        if (args[0] === 'ps') {
+          return {
+            code: 0,
+            stdout: 'agentic-couetil-com-claude-0101\tExited (0) 3 days ago\t12MB\n',
+            stderr: '',
+          };
+        }
+        if (args[0] === 'images') {
+          return {
+            code: 0,
+            stdout:
+              args[1] === 'agentic-coding-base'
+                ? 'agentic-coding-base:9.9.9\t812MB\n'
+                : '',
+            stderr: '',
+          };
+        }
+        if (args[0] === 'system') {
+          return {
+            code: 0,
+            stdout: JSON.stringify([
+              { Name: 'agentic-npm-cache', UsageData: { Size: 1_200_000_000 } },
+            ]),
+            stderr: '',
+          };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(await run(c.deps)).toBe(0);
+    const text = c.out();
+    expect(text).toContain(
+      'container   agentic-couetil-com-claude-0101 — Exited (0) 3 days ago — 12MB',
+    );
+    expect(text).toContain('image       agentic-coding-base:9.9.9 — 812MB');
+    expect(text).toContain('volume      agentic-npm-cache — 1.2GB');
+    expect(text).toContain('volume      agentic-couetil-com-uv — (not created)');
+    expect(text).toContain('retention   30d');
+    expect(text).toContain('last sweep  2026-08-30T12:00:00.000Z');
+    expect(text).toContain('WARNING     last sweep failed: docker rm exited 1');
+    expect(text).toContain(
+      'build cache is daemon-global — reclaim with `docker builder prune` (not run by this tool)',
+    );
+  });
+
+  it('marks volume sizes unavailable when docker system df fails', async () => {
+    const c = makeDeps({
+      argv: ['doctor'],
+      fileExists: (p) => p === '/proj/.agent/config.js',
+      importModule: async () => ({ default: VALID_CONFIG }),
+      exec: async (_cmd, args) =>
+        args[0] === 'system'
+          ? { code: 1, stdout: '', stderr: 'unknown flag' }
+          : { code: 0, stdout: '', stderr: '' },
+    });
+    expect(await run(c.deps)).toBe(0);
+    expect(c.out()).toContain(
+      'volumes     (sizes unavailable — run `docker system df -v`)',
+    );
+    expect(c.out()).toContain('containers  (none kept)');
   });
 });
 

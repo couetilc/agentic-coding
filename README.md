@@ -31,7 +31,7 @@ agent shell  [cmd...]    a shell in the container instead of an agent
                          (runs the given command directly, or interactive bash)
 agent clean              remove THIS project's exited containers + rebuild images
 agent init               scaffold/upgrade .agent/ in the current repo (idempotent)
-agent doctor             print resolved config, image status, env preflight
+agent doctor             print resolved config, image/disk status, env preflight
 ```
 
 Every command refuses to run inside an agent container (`IS_SANDBOX=1`) — no
@@ -66,6 +66,7 @@ export default {
 
   requiredEnv: [],                  // .env keys the preflight requires beyond GH_TOKEN
   caches: ['uv'],                   // extra named cache volumes (npm is always mounted)
+  retentionDays: 30,                // days before old containers/image tags are swept (0 disables)
 }
 ```
 
@@ -97,6 +98,36 @@ shows a redacted view.
 
 Codex subscription auth stays file-based: `~/.codex/auth.json` is base64-encoded
 into an exported var and passed off the argv, so a secret never shows in `ps`.
+
+## Disk usage & retention
+
+Containers are kept after exit by design (unpushed work stays salvageable), and
+versioned images accumulate as the package updates — left alone, that growth is
+unbounded. The tool therefore cleans up after itself on an age horizon: at
+launch (best-effort, throttled to once per 24h via a marker file in
+`~/.config/agentic-coding/`) and on every `agent clean`, it removes **this
+project's** stopped containers and superseded `agentic-coding-base:*` /
+`agentic-<project>:*` image tags older than `retentionDays` (default 30; `0`
+disables). The current version's images, running containers, and cache volumes
+are never touched, and everything is label- or name-scoped to this tool's own
+artifacts. Sweep failures are silent at launch; `agent doctor`'s Disk section
+shows the last sweep, any warning, and what your kept containers, image tags,
+and cache volumes cost on disk.
+
+Two things stay manual on purpose: docker's **build cache** is daemon-global
+and unlabeled, so the tool never prunes it — run `docker builder prune`
+yourself occasionally — and **cache volumes** are never auto-deleted (`docker
+volume rm <name>` if you retire a project).
+
+**Small-RAM hosts (macOS):** the tool deliberately sets no per-container
+`--memory`/`--cpus` limits — agent workloads are spiky, and arbitration is left
+to the docker VM and OS. What actually hurts is a full disk: macOS swap lives
+on the same volume, so when docker state fills the disk, swap can't grow and
+memory pressure escalates straight to process kills. Keep disk headroom (the
+retention sweep bounds this tool's share; `docker system df` shows the rest).
+If you want a hard memory ceiling anyway, your VM provider exposes one
+(OrbStack/Docker Desktop settings), or point a docker context at a dedicated,
+capped VM — every `agent` command just uses `docker` on your PATH.
 
 ## Updating
 
