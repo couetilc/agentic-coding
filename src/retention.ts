@@ -121,7 +121,12 @@ export function expiredContainerIds(
 }
 
 // Superseded tags only: the current version's tag is never a candidate, so a
-// concurrent launch can't lose the image it is about to run.
+// concurrent launch can't lose the image it is about to run. That protection
+// covers the whole `<version>-*` family, not just the exact tag: overlay
+// tags carry a content hash suffix (issue #8 P2), and a launch that just
+// resolved `<version>-<hash>` as "present, skip build" must not race a sweep
+// deleting it. Old-hash tags of the current version age out only when the
+// version moves on; superseded-version tags (hashed or not) age out as before.
 export function expiredImageRefs(
   stdout: string,
   repo: string,
@@ -135,7 +140,11 @@ export function expiredImageRefs(
     if (tag === undefined || tag === '' || createdAt === undefined) {
       continue;
     }
-    if (tag === currentVersion || tag === '<none>') {
+    if (
+      tag === currentVersion ||
+      tag.startsWith(`${currentVersion}-`) ||
+      tag === '<none>'
+    ) {
       continue;
     }
     const created = parseDockerDate(createdAt);

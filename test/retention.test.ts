@@ -161,6 +161,18 @@ describe('pure argv builders + parsers', () => {
       'agentic-coding-base:0.0.9',
     ]);
   });
+
+  it('expiredImageRefs protects content-hashed tags of the current version (issue #8 P2)', () => {
+    const stdout = [
+      `${V}-a1b2c3d4e5f6\t${OLD}`, // current version, hashed overlay — protected
+      `${V}-0123456789ab\t${OLD}`, // older hash, SAME version — still protected
+      `0.0.9-a1b2c3d4e5f6\t${OLD}`, // superseded version, hashed — sweepable
+      '',
+    ].join('\n');
+    expect(expiredImageRefs(stdout, 'agentic-couetil-com', V, NOW, 30)).toEqual([
+      'agentic-couetil-com:0.0.9-a1b2c3d4e5f6',
+    ]);
+  });
 });
 
 describe('maybeSweep', () => {

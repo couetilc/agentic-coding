@@ -129,6 +129,24 @@ If you want a hard memory ceiling anyway, your VM provider exposes one
 (OrbStack/Docker Desktop settings), or point a docker context at a dedicated,
 capped VM — every `agent` command just uses `docker` on your PATH.
 
+## Launch performance
+
+`AGENT_TIMING=1 agent claude` prints per-stage launch timings to stderr from
+both halves of the pipeline — the host launcher (config/preflight, image
+checks, volume prep) and the container entrypoint (clone, CLI setup, init.sh) —
+including the docker create+start gap the host cannot otherwise observe. Use it
+to find where a slow launch actually spends its time; `.agent/init.sh` is on
+the critical path and is usually the biggest project-controlled cost.
+
+The claude CLI install lives in a machine-wide volume
+(`agentic-claude-install`): one `claude update` from any container serves every
+later launch, gated by a freshness marker (default 12h; tune with
+`AGENT_UPDATE_TTL_HOURS`, skip entirely with `AGENT_NO_UPDATE=1`). When the
+check does run and finds a release, it blocks briefly so that session — and
+every one after it — starts on the current version. Overlay images are tagged
+by a content hash of `.agent/`, so an unchanged overlay skips its per-launch
+`docker build` entirely; edits still rebuild on the next launch.
+
 ## Updating
 
 The shims pin the major: `npx -y @couetilc/agentic-coding@^<major>`. Patch and

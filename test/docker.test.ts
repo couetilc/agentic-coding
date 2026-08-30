@@ -14,6 +14,7 @@ import {
   diskVolumeLines,
   diskVolumesArgs,
   dockerExec,
+  hashDirectory,
   ensureBaseImage,
   ensureOverlayImage,
   hasOverlay,
@@ -451,6 +452,113 @@ describe('doctor image status lines', () => {
     });
     expect(await overlayStatusLine(unbuilt.deps, CONFIG, V)).toContain(
       'built on next launch',
+    );
+  });
+});
+
+// --- content-hashed overlay tags (issue #8 P2) -------------------------------
+
+describe('hashDirectory / hashed overlay tags', () => {
+  it('overlayTag appends the context hash when given', () => {
+    expect(overlayTag('couetil-com', '1.2.3', 'a1b2c3d4e5f6')).toBe(
+      'agentic-couetil-com:1.2.3-a1b2c3d4e5f6',
+    );
+    expect(overlayTag('couetil-com', '1.2.3')).toBe('agentic-couetil-com:1.2.3');
+  });
+
+  it('hashDirectory is content-stable and content-sensitive', async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-hash-'));
+    try {
+      mkdirSync(join(dir, 'sub'));
+      writeFileSync(join(dir, 'Dockerfile'), 'FROM base\n');
+      writeFileSync(join(dir, 'sub', 'file.txt'), 'hello\n');
+      const first = hashDirectory(dir);
+      expect(first).toMatch(/^[0-9a-f]{12}$/);
+      // Same content → same hash (stability across walks).
+      expect(hashDirectory(dir)).toBe(first);
+      // Changed content → different hash.
+      writeFileSync(join(dir, 'sub', 'file.txt'), 'changed\n');
+      expect(hashDirectory(dir)).not.toBe(first);
+      // A renamed path also changes the hash (paths are hashed too).
+      writeFileSync(join(dir, 'sub', 'file.txt'), 'hello\n');
+      expect(hashDirectory(dir)).toBe(first);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('hashDirectory returns undefined for an unreadable context (fallback = always build)', () => {
+    expect(hashDirectory('/nonexistent-path-for-agentic-test')).toBeUndefined();
+  });
+
+  it('ensureOverlayImage skips the build when the hashed tag already exists', async () => {
+    // image inspect → 0 (tag present); a build would also "succeed", so the
+    // assertion is that NO build argv was issued at all.
+    const f = fakeExec(() => ({ code: 0 }));
+    const d = makeDeps({
+      exec: f.exec,
+      fileExists: (p) => p === '/proj/.agent/Dockerfile',
+    });
+    const result = await ensureOverlayImage(
+      d.deps,
+      CONFIG,
+      V,
+      () => 'a1b2c3d4e5f6',
+    );
+    expect(result).toEqual({
+      code: 0,
+      image: 'agentic-couetil-com:1.2.3-a1b2c3d4e5f6',
+    });
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0].args).toEqual(inspectArgs('agentic-couetil-com:1.2.3-a1b2c3d4e5f6'));
+    expect(d.err.join('')).toContain('cached — .agent/ unchanged');
+  });
+
+  it('ensureOverlayImage builds the hashed tag when it is missing', async () => {
+    const f = fakeExec((c) =>
+      c.args[0] === 'image' && c.args[1] === 'inspect' ? { code: 1 } : { code: 0 },
+    );
+    const d = makeDeps({
+      exec: f.exec,
+      fileExists: (p) => p === '/proj/.agent/Dockerfile',
+    });
+    const result = await ensureOverlayImage(
+      d.deps,
+      CONFIG,
+      V,
+      () => 'a1b2c3d4e5f6',
+    );
+    expect(result.code).toBe(0);
+    expect(result.image).toBe('agentic-couetil-com:1.2.3-a1b2c3d4e5f6');
+    expect(f.calls[1].args).toEqual(
+      overlayBuildArgs(
+        '/proj/.agent',
+        'agentic-couetil-com:1.2.3-a1b2c3d4e5f6',
+        baseTag(V),
+      ),
+    );
+  });
+
+  it('clean rebuilds the overlay under its hashed tag', async () => {
+    const f = fakeExec((c) =>
+      c.args[0] === 'ps' ? { stdout: '\n' } : { code: 0 },
+    );
+    const d = makeDeps({
+      exec: f.exec,
+      fileExists: (p) => p === '/proj/.agent/Dockerfile',
+    });
+    expect(await clean(d.deps, CONFIG, V, () => 'a1b2c3d4e5f6')).toBe(0);
+    const overlayBuild = f.calls[f.calls.length - 1];
+    expect(overlayBuild.args).toEqual(
+      overlayBuildArgs(
+        '/proj/.agent',
+        'agentic-couetil-com:1.2.3-a1b2c3d4e5f6',
+        baseTag(V),
+        true,
+      ),
     );
   });
 });
