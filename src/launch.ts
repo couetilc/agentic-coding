@@ -51,6 +51,11 @@ export interface RunSpec {
   // Headless/scripted launches (`agent claude -p ...`, `agent shell -- cmd`)
   // must NOT request a TTY or docker fails "the input device is not a TTY".
   isTTY: boolean;
+  // Per-stage timing (issue #8): `-e AGENT_TIMING=... -e AGENT_LAUNCH_T0=<ms>`
+  // when the host env sets AGENT_TIMING, [] otherwise. T0 lets the entrypoint
+  // report the docker create+start gap (containers share the host kernel
+  // clock; `docker run` itself only returns when the session ends).
+  timingEnv: string[];
   // Agent model/effort env + any auth `-e` args (values via childEnv, not argv).
   agentEnv: string[];
   ports: PortMapping[];
@@ -81,6 +86,7 @@ export function buildRunArgs(spec: RunSpec): string[] {
   // ghostty/kitty/wezterm ('unknown terminal "xterm-ghostty"').
   args.push('-e', 'TERM=xterm-256color');
   args.push('-e', `COLORTERM=${spec.colorterm}`);
+  args.push(...spec.timingEnv);
   args.push(...spec.agentEnv);
   for (const p of spec.ports) {
     args.push('-e', `DEV_HOST_${p.name.toUpperCase()}=127.0.0.1:${p.host}`);
@@ -128,6 +134,34 @@ export function volumeCreateArgs(volume: string, project: string): string[] {
   return ['volume', 'create', ...labels, volume];
 }
 
+// Per-stage host-side launch timing (issue #8), printed to stderr when the
+// host env sets AGENT_TIMING. Uses deps.now() (not hrtime) so tests drive it
+// with the same fake clock as container names; ms resolution is plenty for
+// stages this size. The container-side stages print their own marks from the
+// entrypoint under the same `[agent-timing]` prefix.
+interface LaunchTimer {
+  enabled: boolean;
+  mark: (label: string) => void;
+}
+
+export function makeTimer(deps: Pick<CliDeps, 'env' | 'now' | 'err'>): LaunchTimer {
+  const enabled = (deps.env.AGENT_TIMING ?? '') !== '';
+  let prev = deps.now().getTime();
+  return {
+    enabled,
+    mark(label: string): void {
+      if (!enabled) {
+        return;
+      }
+      const now = deps.now().getTime();
+      deps.err(
+        `[agent-timing] ${label.padEnd(26)} ${String(now - prev).padStart(6)} ms\n`,
+      );
+      prev = now;
+    },
+  };
+}
+
 // Host git identity — the entrypoint refuses to start without it (§5), so the
 // launcher preflights it here for a clearer error before docker run.
 async function gitConfigValue(deps: CliDeps, key: string): Promise<string> {
@@ -144,6 +178,8 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
   // `agent claude -- --flag` pass the tail through cleanly.
   const rawArgs = deps.argv.slice(1);
   const args = rawArgs[0] === '--' ? rawArgs.slice(1) : rawArgs;
+
+  const timer = makeTimer(deps);
 
   let config: AgentConfig;
   try {
@@ -189,6 +225,7 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
     agentEnv = [...agent.modelEnv(config.agents[agent.kind]), ...auth.dockerArgs];
     Object.assign(childEnv, auth.childEnv);
   }
+  timer.mark('config + env preflight');
 
   // Everything below touches the OS (git, docker). A spawn failure — docker or
   // git not installed — rejects through the exec seam; catch it and print one
@@ -202,20 +239,24 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
       );
       return 1;
     }
+    timer.mark('host git identity');
 
     // Retention sweep (issue #5): best-effort and silent (throttled to once
     // per 24h via the marker file); frees disk before the builds below.
     await maybeSweep(deps, config, deps.version);
+    timer.mark('retention sweep');
 
     // Build base (cached; prints first-build vs cached) then overlay if present.
     const baseCode = await ensureBaseImage(deps, deps.version);
     if (baseCode !== 0) {
       return baseCode;
     }
+    timer.mark('base image check');
     const overlay = await ensureOverlayImage(deps, config, deps.version);
     if (overlay.code !== 0) {
       return overlay.code;
     }
+    timer.mark('overlay image');
 
     // Make every cache mountpoint node-writable BEFORE the main run: a fresh
     // named volume at a path the image doesn't pre-create would otherwise be
@@ -240,6 +281,7 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
       );
       return prep.code ?? 1;
     }
+    timer.mark('cache volume prep');
 
     // One distinct host port per named config port.
     const names = Object.keys(config.ports);
@@ -290,6 +332,16 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
       gitUserEmail,
       colorterm: deps.env.COLORTERM ?? '',
       isTTY: deps.isTTY,
+      // T0 is captured here, as close to the `docker run` as the spec allows,
+      // so the entrypoint's create+start gap excludes the stages above.
+      timingEnv: timer.enabled
+        ? [
+            '-e',
+            `AGENT_TIMING=${deps.env.AGENT_TIMING}`,
+            '-e',
+            `AGENT_LAUNCH_T0=${deps.now().getTime()}`,
+          ]
+        : [],
       agentEnv,
       ports,
       image: overlay.image,

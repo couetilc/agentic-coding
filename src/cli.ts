@@ -182,6 +182,12 @@ async function doctor(deps: CliDeps): Promise<number> {
   sections.push(await imagesSection(deps, config));
   sections.push(await diskSection(deps, config));
   sections.push(environmentSection(deps, config));
+  sections.push({
+    title: 'Timing',
+    lines: [
+      'AGENT_TIMING=1 agent <claude|codex|shell> — per-stage launch timings on stderr (host launcher + container entrypoint), issue #8 baselines',
+    ],
+  });
 
   deps.out(renderSections(sections));
   return code;

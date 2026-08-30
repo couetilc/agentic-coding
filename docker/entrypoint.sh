@@ -7,6 +7,32 @@
 # hardcoded root `npm ci`.
 set -e
 
+# ── 0. Launch timing (issue #8) ──────────────────────────────────────
+# AGENT_TIMING=1 prints per-stage durations to stderr (never stdout — scripted
+# `agent claude -p` owns stdout). AGENT_LAUNCH_T0 is the host launcher's
+# wall-clock in ms, captured just before `docker run`; containers share the
+# host kernel clock, so entry-minus-T0 is the docker create+start overhead the
+# host cannot observe itself (`docker run` only returns when the session ends).
+AGENT_TIMING="${AGENT_TIMING:-}"
+if [ -n "$AGENT_TIMING" ]; then
+	T_ENTRY_NS=$(date +%s%N)
+	T_PREV_NS=$T_ENTRY_NS
+	if [ -n "${AGENT_LAUNCH_T0:-}" ]; then
+		printf '[agent-timing] %-26s %6d ms\n' 'docker create+start' \
+			"$(( T_ENTRY_NS / 1000000 - AGENT_LAUNCH_T0 ))" >&2
+	fi
+fi
+# timing_mark <label>: print the time since the previous mark, then reset it.
+timing_mark() {
+	if [ -n "$AGENT_TIMING" ]; then
+		local now_ns
+		now_ns=$(date +%s%N)
+		printf '[agent-timing] %-26s %6d ms\n' "$1" \
+			"$(( (now_ns - T_PREV_NS) / 1000000 ))" >&2
+		T_PREV_NS=$now_ns
+	fi
+}
+
 # Which agent this container runs (the launcher injects claude|codex|shell). No
 # default seeding for a bare `docker run` — only explicit claude/codex seed CLIs.
 AGENT_KIND="${AGENT_KIND:-}"
@@ -32,6 +58,7 @@ git config --global core.hooksPath /opt/agent/hooks
 if [ -n "${GH_TOKEN:-}" ]; then
 	gh auth setup-git 2>/dev/null || true
 fi
+timing_mark 'git identity + transport'
 
 # ── 3. Clone the workspace ───────────────────────────────────────────
 # Each container clones its own tree — no host mounts, so parallel containers
@@ -57,6 +84,7 @@ if [ ! -e /workspace/.git ]; then
 		git clone "https://github.com/${REPO}.git" /workspace
 	fi
 fi
+timing_mark 'workspace clone'
 
 # ── 4. Agent-specific CLI setup ──────────────────────────────────────
 if [ "$AGENT_KIND" = "codex" ]; then
@@ -118,6 +146,7 @@ elif [ "$AGENT_KIND" = "claude" ]; then
 			> "$HOME/.claude/settings.json"
 	fi
 fi
+timing_mark 'agent CLI setup'
 
 # ── 5. Surface-identity instructions ─────────────────────────────────
 # Container-scoped global instructions, auto-loaded into every session's
@@ -129,6 +158,7 @@ case "$AGENT_KIND" in
 esac
 mkdir -p "$(dirname "$AGENT_GLOBAL_INSTRUCTIONS")"
 cp /opt/agent/instructions.md "$AGENT_GLOBAL_INSTRUCTIONS"
+timing_mark 'surface instructions'
 
 # ── 6. Project bootstrap ─────────────────────────────────────────────
 # Run the project's user-space bootstrap if it exists and is executable
@@ -140,6 +170,11 @@ if [ -x /workspace/.agent/init.sh ]; then
 		echo "warning: /workspace/.agent/init.sh failed (non-fatal); continuing" >&2
 	fi
 fi
+timing_mark 'project init.sh'
 
 # ── 7. Hand off to the requested command ─────────────────────────────
+if [ -n "$AGENT_TIMING" ]; then
+	printf '[agent-timing] %-26s %6d ms\n' 'entrypoint total' \
+		"$(( ($(date +%s%N) - T_ENTRY_NS) / 1000000 ))" >&2
+fi
 exec "$@"
