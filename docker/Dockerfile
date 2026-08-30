@@ -29,13 +29,6 @@ RUN arch=$(dpkg --print-architecture) && case "$arch" in \
 		| tar -xz -C /usr/local/bin gitleaks \
 	&& gitleaks version
 
-# The generalized entrypoint, the baked git hooks, and the in-container surface
-# instructions (written to the agent's global path each start by the entrypoint).
-COPY entrypoint.sh /usr/local/bin/agent-entrypoint
-COPY hooks /opt/agent/hooks
-COPY instructions.md /opt/agent/instructions.md
-RUN chmod +x /usr/local/bin/agent-entrypoint /opt/agent/hooks/*
-
 # Pre-create node-owned dirs so fresh cache volumes and the clone target never
 # end up root-owned: /workspace (clone), ~/.npm + ~/.cache/uv (the cache paths
 # the tool maps by name — a fresh named volume copies the image dir's
@@ -74,6 +67,18 @@ RUN arch=$(dpkg --print-architecture) && case "$arch" in \
 		| tar -xz -C /home/node/.local/bin --strip-components=1 \
 			"uv-${uv_arch}/uv" "uv-${uv_arch}/uvx" \
 	&& uv --version
+
+# The generalized entrypoint, the baked git hooks, and the in-container surface
+# instructions (written to the agent's global path each start by the entrypoint).
+# Deliberately the LAST layers (issue #8): these small shell assets change far
+# more often than the toolchain installs above, and an early COPY would
+# invalidate the claude/codex/uv download layers on every entrypoint edit —
+# ordered this way, an entrypoint-only engine release rebuilds in seconds from
+# cache. COPY --chmod (BuildKit, docker's default builder) replaces the old
+# root RUN chmod, since COPY ignores USER and these layers sit after `USER node`.
+COPY --chmod=755 entrypoint.sh /usr/local/bin/agent-entrypoint
+COPY --chmod=755 hooks /opt/agent/hooks
+COPY instructions.md /opt/agent/instructions.md
 
 # IS_SANDBOX marks this as a sandboxed environment (the CLI's docker-in-docker
 # guard also keys off it). DISABLE_AUTOUPDATER keeps the CLIs frozen mid-session.
