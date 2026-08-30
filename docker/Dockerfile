@@ -47,9 +47,13 @@ RUN mkdir -p /workspace /home/node/.claude /home/node/.npm /home/node/.cache/uv 
 USER node
 WORKDIR /workspace
 
-# claude CLI via the native installer, owned by `node` (~/.local) so the
-# entrypoint can `claude update` before a session. Mid-session auto-update is
-# off for predictability — the refresh happens at start.
+# claude CLI via the native installer, owned by `node` (~/.local). The install
+# dir (~/.local/share/claude) is mounted as a shared machine-wide volume at
+# launch; docker's copy-on-first-use seeds an empty volume from THIS baked
+# install (which is why it must exist, node-owned, at exactly that path), and
+# the entrypoint's §6.5 freshness step activates the volume's newest version +
+# TTL-gates `claude update` (issue #8 P1a). Mid-session auto-update is off for
+# predictability — the refresh happens at start.
 ENV PATH="/home/node/.local/bin:${PATH}"
 RUN curl -fsSL https://claude.ai/install.sh | bash
 

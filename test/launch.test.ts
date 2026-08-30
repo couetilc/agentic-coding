@@ -239,6 +239,16 @@ describe('volumeCreateArgs', () => {
       'agentic-npm-cache',
     ]);
   });
+
+  it('labels the shared claude install with managed only (issue #8 P1a)', () => {
+    expect(volumeCreateArgs('agentic-claude-install', 'couetil-com')).toEqual([
+      'volume',
+      'create',
+      '--label',
+      'agentic-coding.managed=1',
+      'agentic-claude-install',
+    ]);
+  });
 });
 
 // --- runLaunch orchestration (exec stubbed) --------------------------------
@@ -368,6 +378,10 @@ describe('runLaunch', () => {
         [
           { volume: 'agentic-npm-cache', path: '/home/node/.npm' },
           { volume: 'agentic-couetil-com-uv', path: '/home/node/.cache/uv' },
+          {
+            volume: 'agentic-claude-install',
+            path: '/home/node/.local/share/claude',
+          },
         ],
         'agentic-coding-base:1.2.3',
       ),
@@ -387,6 +401,7 @@ describe('runLaunch', () => {
     expect(creates.map((c) => c.args)).toEqual([
       volumeCreateArgs('agentic-npm-cache', 'couetil-com'),
       volumeCreateArgs('agentic-couetil-com-uv', 'couetil-com'),
+      volumeCreateArgs('agentic-claude-install', 'couetil-com'),
     ]);
     const prep = chownPreStep(calls);
     expect(calls.indexOf(creates[1])).toBeLessThan(calls.indexOf(prep));

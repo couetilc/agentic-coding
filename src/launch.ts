@@ -1,6 +1,7 @@
 import { claudeAgent } from './agents/claude.js';
 import { codexAgent } from './agents/codex.js';
 import {
+  CLAUDE_INSTALL_MOUNT,
   cacheMounts,
   containerName,
   errorMessage,
@@ -123,12 +124,12 @@ export function chownCacheArgs(mounts: CacheMount[], image: string): string[] {
 
 // Pre-create each cache volume with labels so the tool's volumes are
 // enumerable (`docker run -v` would create them unlabeled). The shared npm
-// cache belongs to no single project, so it carries only the managed label.
-// Best-effort: creating an existing volume is a no-op, and on any failure
-// `docker run -v` still auto-creates the volume.
+// cache and the shared claude install belong to no single project, so they
+// carry only the managed label. Best-effort: creating an existing volume is
+// a no-op, and on any failure `docker run -v` still auto-creates the volume.
 export function volumeCreateArgs(volume: string, project: string): string[] {
   const labels = ['--label', 'agentic-coding.managed=1'];
-  if (volume !== 'agentic-npm-cache') {
+  if (volume !== 'agentic-npm-cache' && volume !== CLAUDE_INSTALL_MOUNT.volume) {
     labels.push('--label', `agentic-coding.project=${project}`);
   }
   return ['volume', 'create', ...labels, volume];
