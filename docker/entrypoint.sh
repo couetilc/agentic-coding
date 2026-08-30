@@ -112,9 +112,10 @@ if [ "$AGENT_KIND" = "codex" ]; then
 		printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key >/dev/null 2>&1 || true
 	fi
 elif [ "$AGENT_KIND" = "claude" ]; then
-	# Refresh the claude CLI (node-owned ~/.local install; works without root).
-	# Never block startup.
-	claude update 2>&1 | tail -1 || true
+	# (The CLI freshness check moved to §6.5: it must run AFTER this seeding —
+	# the updater can create ~/.claude.json, and racing the jq merge below
+	# would clobber the seeded flags — and it now TTL-gates against the shared
+	# install volume instead of blocking every launch. Issue #8 P1a.)
 
 	# First-run state: onboarding, bypass-permissions warning, and /workspace
 	# trust marked complete so a fresh container drops straight into an
@@ -171,6 +172,51 @@ if [ -x /workspace/.agent/init.sh ]; then
 	fi
 fi
 timing_mark 'project init.sh'
+
+# ── 6.5 Claude CLI freshness (issue #8 P1a) ──────────────────────────
+# ~/.local/share/claude is a shared machine-wide named volume (launcher
+# cacheMounts): docker seeds an empty volume from the image's baked install
+# (copy-on-first-use), and one update from any container serves every later
+# launch. First activate the newest version the volume holds — this
+# container's image-baked bin symlink may point at a version the volume has
+# since superseded — then TTL-gate `claude update` on a marker file in the
+# volume: fresh → skip (one stat); expired → BLOCKING update under flock, so
+# this session starts current and parallel launches don't double-download.
+# Runs after the §4 seeding (the updater can create ~/.claude.json; racing
+# the jq merge would clobber the seeded flags). AGENT_NO_UPDATE=1 skips the
+# check entirely; AGENT_UPDATE_TTL_HOURS tunes the window (default 12).
+if [ "$AGENT_KIND" = "claude" ]; then
+	claude_share="$HOME/.local/share/claude"
+	claude_activate() {
+		local newest
+		newest=$(ls "$claude_share/versions" 2>/dev/null | sort -V | tail -n 1)
+		if [ -n "$newest" ]; then
+			ln -sfn "$claude_share/versions/$newest" "$HOME/.local/bin/claude"
+		fi
+	}
+	claude_update_fresh() {
+		[ -f "$claude_share/.last-update-check" ] \
+			&& [ $(( $(date +%s) - $(stat -c %Y "$claude_share/.last-update-check") )) -lt $(( ${AGENT_UPDATE_TTL_HOURS:-12} * 3600 )) ]
+	}
+	claude_activate
+	if [ -z "${AGENT_NO_UPDATE:-}" ] && ! claude_update_fresh; then
+		if command -v flock >/dev/null 2>&1; then
+			(
+				flock -w 30 9 || exit 0
+				# Re-check under the lock: a parallel launch may have just updated.
+				claude_update_fresh && exit 0
+				claude update 2>&1 | tail -n 1 || true
+				touch "$claude_share/.last-update-check"
+			) 9>>"$claude_share/.update.lock"
+		else
+			claude update 2>&1 | tail -n 1 || true
+			touch "$claude_share/.last-update-check"
+		fi
+		# Point the symlink at whatever the update just installed.
+		claude_activate
+	fi
+fi
+timing_mark 'claude CLI freshness'
 
 # ── 7. Hand off to the requested command ─────────────────────────────
 if [ -n "$AGENT_TIMING" ]; then

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { errorMessage, imageName } from './config.js';
@@ -50,8 +52,57 @@ export function baseTag(version: string): string {
   return `agentic-coding-base:${version}`;
 }
 
-export function overlayTag(project: string, version: string): string {
-  return `${imageName(project)}:${version}`;
+// The overlay tag carries a content hash of the build context (issue #8 P2):
+// an unchanged .agent/ resolves to a tag that already exists, so the
+// per-launch `docker build` (context send + cache walk, even when fully
+// cached) collapses to one `docker image inspect`. Edits change the hash →
+// a new tag → a rebuild, preserving the pick-up-edits contract exactly. The
+// engine version stays in the tag so engine upgrades rebuild too. Without a
+// hash (context unreadable) the bare versioned tag keeps the always-build
+// behavior.
+export function overlayTag(
+  project: string,
+  version: string,
+  contextHash?: string,
+): string {
+  return `${imageName(project)}:${version}${
+    contextHash === undefined ? '' : `-${contextHash}`
+  }`;
+}
+
+// Deterministic content hash of a directory tree: sorted relative paths +
+// file bytes (never mtimes, so it is stable across clones). File symlinks
+// hash their target's content via readFileSync-follows; anything unreadable
+// (broken/dir symlink, missing dir) returns undefined and the caller falls
+// back to always-build — a hashing failure must never wrongly SKIP a build.
+export function hashDirectory(dir: string): string | undefined {
+  try {
+    const files: string[] = [];
+    const walk = (rel: string): void => {
+      const entries = readdirSync(rel === '' ? dir : join(dir, rel), {
+        withFileTypes: true,
+      }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      for (const entry of entries) {
+        const relPath = rel === '' ? entry.name : `${rel}/${entry.name}`;
+        if (entry.isDirectory()) {
+          walk(relPath);
+        } else {
+          files.push(relPath);
+        }
+      }
+    };
+    walk('');
+    const hash = createHash('sha256');
+    for (const file of files) {
+      hash.update(file);
+      hash.update('\0');
+      hash.update(readFileSync(join(dir, file)));
+      hash.update('\0');
+    }
+    return hash.digest('hex').slice(0, 12);
+  } catch {
+    return undefined;
+  }
 }
 
 export function overlayDockerfilePath(cwd: string): string {
@@ -170,19 +221,27 @@ export async function ensureBaseImage(
   return result.code ?? 1;
 }
 
-// If a `.agent/Dockerfile` exists, build the overlay (each launch, so edits are
-// picked up; docker's layer cache keeps an unchanged rebuild fast) and run it;
-// otherwise the base image is used directly.
+// If a `.agent/Dockerfile` exists, resolve the overlay: the content-hashed
+// tag already existing means .agent/ is unchanged since that build → skip
+// (issue #8 P2); otherwise build it (edits and engine upgrades land on new
+// tags). Without a hash, fall back to building every launch as before.
+// `hashContext` is injectable so unit tests never touch the real fs.
 export async function ensureOverlayImage(
   deps: DockerDeps,
   config: AgentConfig,
   version: string,
+  hashContext: (dir: string) => string | undefined = hashDirectory,
 ): Promise<{ code: number; image: string }> {
   const base = baseTag(version);
   if (!hasOverlay(deps)) {
     return { code: 0, image: base };
   }
-  const tag = overlayTag(config.project, version);
+  const hash = hashContext(overlayContextDir(deps.cwd));
+  const tag = overlayTag(config.project, version, hash);
+  if (hash !== undefined && (await imagePresent(deps, tag))) {
+    deps.err(`Overlay image ${tag} present (cached — .agent/ unchanged).\n`);
+    return { code: 0, image: tag };
+  }
   deps.err(`Building overlay image ${tag} from .agent/Dockerfile...\n`);
   const result = await dockerExec(
     deps.exec,
@@ -206,6 +265,7 @@ export async function clean(
   deps: DockerDeps,
   config: AgentConfig,
   version: string,
+  hashContext: (dir: string) => string | undefined = hashDirectory,
 ): Promise<number> {
   const listed = await dockerExec(deps.exec, cleanListArgs(config.project), {
     stdio: 'pipe',
@@ -231,7 +291,11 @@ export async function clean(
       deps.exec,
       overlayBuildArgs(
         overlayContextDir(deps.cwd),
-        overlayTag(config.project, version),
+        overlayTag(
+          config.project,
+          version,
+          hashContext(overlayContextDir(deps.cwd)),
+        ),
         baseTag(version),
         true,
       ),
@@ -352,11 +416,16 @@ export async function overlayStatusLine(
   deps: DockerDeps,
   config: AgentConfig,
   version: string,
+  hashContext: (dir: string) => string | undefined = hashDirectory,
 ): Promise<string> {
   if (!hasOverlay(deps)) {
     return 'overlay  (none — .agent/Dockerfile absent; base used directly)';
   }
-  const tag = overlayTag(config.project, version);
+  const tag = overlayTag(
+    config.project,
+    version,
+    hashContext(overlayContextDir(deps.cwd)),
+  );
   const present = await imagePresent(deps, tag);
   return `overlay  ${tag} — ${
     present ? 'present' : 'missing (built on next launch)'

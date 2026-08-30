@@ -141,6 +141,9 @@ describe.skipIf(!RUN)('e2e: base image + entrypoint', () => {
         AGENT_KIND: 'claude',
         CLAUDE_MODEL: 'e2e-model',
         CLAUDE_EFFORT: 'e2e-effort',
+        // Keep the e2e hermetic: skip the TTL-gated `claude update` network
+        // check; the activation step (§6.5) still runs and is asserted below.
+        AGENT_NO_UPDATE: '1',
       },
       [
         'bash',
@@ -158,6 +161,9 @@ describe.skipIf(!RUN)('e2e: base image + entrypoint', () => {
           // sticky; the launched CMD's --model flag carries config's choice).
           'CLAUDE_MODEL=other-model agent-entrypoint true >/dev/null 2>&1',
           'echo MODEL2=$(jq -r .model "$HOME/.claude/settings.json")',
+          // §6.5 activation: the bin symlink points at the newest version in
+          // the install dir (the shared volume in a real launch).
+          'echo LINK=$(readlink "$HOME/.local/bin/claude")',
           'echo E2E_DONE',
         ].join('; '),
       ],
@@ -170,6 +176,7 @@ describe.skipIf(!RUN)('e2e: base image + entrypoint', () => {
     expect(out).toContain('EFFORT=e2e-effort');
     expect(out).toContain('SKIP=true');
     expect(out).toContain('MODEL2=e2e-model');
+    expect(out).toMatch(/LINK=.*\/\.local\/share\/claude\/versions\//);
     expect(out).toContain('E2E_DONE');
   });
 
@@ -192,6 +199,7 @@ describe.skipIf(!RUN)('e2e: base image + entrypoint', () => {
       'agent CLI setup',
       'surface instructions',
       'project init.sh',
+      'claude CLI freshness',
       'entrypoint total',
     ]) {
       expect(timed.stderr).toContain(`[agent-timing] ${stage}`);

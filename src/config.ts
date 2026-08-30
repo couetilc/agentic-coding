@@ -325,11 +325,28 @@ export interface CacheMount {
   path: string;
 }
 
+// The claude CLI install, shared machine-wide like the npm cache (issue #8
+// P1a): docker's copy-on-first-use seeds an empty volume from the image's
+// baked install (the Dockerfile installs it node-owned at this exact path),
+// and one `claude update` from any container then serves every later launch
+// on the machine. The entrypoint's freshness step (§6.5) activates the
+// volume's newest version and TTL-gates the update check. Mounted for every
+// agent kind — harmless for codex/shell, and it keeps the mount list
+// config-independent.
+export const CLAUDE_INSTALL_MOUNT: CacheMount = {
+  volume: 'agentic-claude-install',
+  path: '/home/node/.local/share/claude',
+};
+
 // The shared npm cache is always mounted first; each config cache follows,
-// project-scoped, at its conventional container path.
+// project-scoped, at its conventional container path; the shared claude
+// install rides along last.
 export function cacheMounts(config: AgentConfig): CacheMount[] {
-  return ['npm', ...config.caches].map((c) => ({
-    volume: cacheVolumeName(config.project, c),
-    path: cacheMountPath(c),
-  }));
+  return [
+    ...['npm', ...config.caches].map((c) => ({
+      volume: cacheVolumeName(config.project, c),
+      path: cacheMountPath(c),
+    })),
+    CLAUDE_INSTALL_MOUNT,
+  ];
 }

@@ -309,12 +309,14 @@ describe('derivations', () => {
     expect(cacheMountPath('pip')).toBe('/home/node/.cache/pip');
   });
 
-  it('cacheMounts pairs each volume with its container path, npm first', () => {
+  it('cacheMounts pairs each volume with its container path, npm first, claude install last', () => {
     const config = { ...VALID, caches: ['uv', 'pip'] } as AgentConfig;
     expect(cacheMounts(config)).toEqual([
       { volume: 'agentic-npm-cache', path: '/home/node/.npm' },
       { volume: 'agentic-couetil-com-uv', path: '/home/node/.cache/uv' },
       { volume: 'agentic-couetil-com-pip', path: '/home/node/.cache/pip' },
+      // The shared claude install rides along for every config (issue #8 P1a).
+      { volume: 'agentic-claude-install', path: '/home/node/.local/share/claude' },
     ]);
   });
 });

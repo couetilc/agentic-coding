@@ -1,6 +1,7 @@
 import { claudeAgent } from './agents/claude.js';
 import { codexAgent } from './agents/codex.js';
 import {
+  CLAUDE_INSTALL_MOUNT,
   cacheMounts,
   containerName,
   errorMessage,
@@ -123,15 +124,46 @@ export function chownCacheArgs(mounts: CacheMount[], image: string): string[] {
 
 // Pre-create each cache volume with labels so the tool's volumes are
 // enumerable (`docker run -v` would create them unlabeled). The shared npm
-// cache belongs to no single project, so it carries only the managed label.
-// Best-effort: creating an existing volume is a no-op, and on any failure
-// `docker run -v` still auto-creates the volume.
+// cache and the shared claude install belong to no single project, so they
+// carry only the managed label. Best-effort: creating an existing volume is
+// a no-op, and on any failure `docker run -v` still auto-creates the volume.
 export function volumeCreateArgs(volume: string, project: string): string[] {
   const labels = ['--label', 'agentic-coding.managed=1'];
-  if (volume !== 'agentic-npm-cache') {
+  if (volume !== 'agentic-npm-cache' && volume !== CLAUDE_INSTALL_MOUNT.volume) {
     labels.push('--label', `agentic-coding.project=${project}`);
   }
   return ['volume', 'create', ...labels, volume];
+}
+
+// Doctor's ownership probe (issue #8 P1c): stat each cache mountpoint's uid
+// from a throwaway container, so a volume the exists-⇒-chowned gate wrongly
+// trusts (an interrupted launch created it but never chowned it) is
+// diagnosable instead of a mystery EACCES. Mirrors chownCacheArgs' shape.
+export function statCacheArgs(mounts: CacheMount[], image: string): string[] {
+  return [
+    'run',
+    '--rm',
+    ...mounts.flatMap((m) => ['-v', `${m.volume}:${m.path}`]),
+    '--entrypoint',
+    'stat',
+    image,
+    '-c',
+    '%u %n',
+    ...mounts.map((m) => m.path),
+  ];
+}
+
+// One batched existence check for every cache volume: `docker volume inspect`
+// exits non-zero if ANY named volume is missing. Exit 0 means all volumes
+// exist, and every creation path runs through this launcher's create+chown
+// sequence, so existence implies the mountpoints are already node-owned —
+// the whole volume prep (creates + the chown container, est. 0.5–1.5s of
+// docker run --rm spin-up) can be skipped (issue #8 P1c). The residual risk —
+// a launch interrupted between volume creation and the chown leaves an
+// existing-but-root-owned volume this gate then skips — is surfaced by
+// `agent doctor`'s volume ownership check.
+export function volumeInspectArgs(volumes: string[]): string[] {
+  return ['volume', 'inspect', ...volumes];
 }
 
 // Per-stage host-side launch timing (issue #8), printed to stderr when the
@@ -262,24 +294,33 @@ export async function runLaunch(deps: CliDeps): Promise<number> {
     // named volume at a path the image doesn't pre-create would otherwise be
     // root-owned for good (see chownCacheArgs). Volumes are pre-created with
     // labels first (see volumeCreateArgs); the result is ignored on purpose.
+    // When every volume already exists, the whole prep is skipped — one
+    // batched inspect instead of a container spin-up (see volumeInspectArgs).
     const mounts = cacheMounts(config);
-    for (const mount of mounts) {
-      await dockerExec(
-        deps.exec,
-        volumeCreateArgs(mount.volume, config.project),
-        { stdio: 'pipe' },
-      );
-    }
-    const prep = await dockerExec(
+    const existing = await dockerExec(
       deps.exec,
-      chownCacheArgs(mounts, overlay.image),
+      volumeInspectArgs(mounts.map((m) => m.volume)),
       { stdio: 'pipe' },
     );
-    if ((prep.code ?? 1) !== 0) {
-      deps.err(
-        `error: preparing cache volumes failed (docker exited ${prep.code ?? 'null'})${prep.stderr !== '' ? `: ${prep.stderr.trim()}` : ''}\n`,
+    if (existing.code !== 0) {
+      for (const mount of mounts) {
+        await dockerExec(
+          deps.exec,
+          volumeCreateArgs(mount.volume, config.project),
+          { stdio: 'pipe' },
+        );
+      }
+      const prep = await dockerExec(
+        deps.exec,
+        chownCacheArgs(mounts, overlay.image),
+        { stdio: 'pipe' },
       );
-      return prep.code ?? 1;
+      if ((prep.code ?? 1) !== 0) {
+        deps.err(
+          `error: preparing cache volumes failed (docker exited ${prep.code ?? 'null'})${prep.stderr !== '' ? `: ${prep.stderr.trim()}` : ''}\n`,
+        );
+        return prep.code ?? 1;
+      }
     }
     timer.mark('cache volume prep');
 
