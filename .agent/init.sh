@@ -8,12 +8,11 @@
 # dependencies, syncing tool caches, generating files.
 #
 # A failure here warns loudly but does NOT block the session — the agent inside
-# can diagnose. This template is a no-op; uncomment or add what your repo needs.
-#
-# Examples:
-#   # (cd astro && npm ci)
-#   # npm ci
-#   # uv sync
+# can diagnose.
 
-npm ci
-npm run build
+# This runs on the launch critical path (issue #8). `npm ci` already runs the
+# `prepare` script, which builds dist/ (tsc) — a separate `npm run build` here
+# would build twice. --prefer-offline trusts the shared npm cache volume (the
+# lockfile pins exact versions, so a cache hit is byte-identical); --no-audit
+# --no-fund skip two network round-trips.
+npm ci --prefer-offline --no-audit --no-fund
