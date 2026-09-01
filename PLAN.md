@@ -84,7 +84,7 @@ agentic-coding/               (this repo → github.com/couetilc/agentic-coding)
   dev-only deps (typescript, vitest, @vitest/coverage-v8) for build/testing.
 - Publish with `--access public`. GitHub Actions: test on PR; publish on tag.
 
-**Update story.** Shims invoke `npx -y @couetilc/agentic-coding@^1 ...`, so
+**Update story.** Shims invoke `npx -y --package @couetilc/agentic-coding@^1 -- agent ...`, so
 patch/minor updates arrive automatically via npx resolution; a major bump is an
 explicit shim edit (re-run `agent init`). `config.js` carries `schemaVersion`;
 the CLI refuses configs newer than it understands and migrates older ones
@@ -140,9 +140,9 @@ regenerated):
 ├── config.js         from template, derived values filled in   [user-owned]
 ├── README.md         host-side config docs (see §6)            [engine-owned]
 ├── bin/
-│   ├── agent         exec npx -y @couetilc/agentic-coding@^1 "$@"
-│   ├── claude        exec npx -y @couetilc/agentic-coding@^1 claude "$@"
-│   └── codex         exec npx -y @couetilc/agentic-coding@^1 codex "$@"
+│   ├── agent         exec npx -y --package @couetilc/agentic-coding@^1 -- agent "$@"
+│   ├── claude        exec npx -y --package @couetilc/agentic-coding@^1 -- agent claude "$@"
+│   └── codex         exec npx -y --package @couetilc/agentic-coding@^1 -- agent codex "$@"
 ├── init.sh           commented template (user-space bootstrap)  [user-owned]
 ├── Dockerfile        OPTIONAL; not written by default — README
 │                     documents creating it (overlay example)

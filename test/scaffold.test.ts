@@ -215,17 +215,17 @@ describe('runInit — derivation and rendered content', () => {
   it('shims carry the sandbox guard, the npx line, and the major pin', async () => {
     const c = capturingDeps({ originHead: 'refs/remotes/origin/main' });
     expect(await runInit(c.deps)).toBe(0);
-    for (const [name, sub] of [
-      ['agent', ''],
-      ['claude', 'claude '],
-      ['codex', 'codex '],
+    for (const [name, command] of [
+      ['agent', 'agent'],
+      ['claude', 'agent claude'],
+      ['codex', 'agent codex'],
     ] as const) {
       const shim = c.written.get(`/proj/.agent/bin/${name}`) ?? '';
       expect(shim).toContain('#!/bin/sh');
       expect(shim).toContain('IS_SANDBOX');
       expect(shim).toContain('exit 0'); // no-ops politely inside the container
       expect(shim).toContain(
-        `exec npx -y @couetilc/agentic-coding@^0 ${sub}"$@"`,
+        `exec npx -y --package @couetilc/agentic-coding@^0 -- ${command} "$@"`,
       );
       expect(shim).not.toContain('{{');
     }
@@ -238,7 +238,7 @@ describe('runInit — derivation and rendered content', () => {
     );
     expect(await runInit(c.deps)).toBe(0);
     expect(c.written.get('/proj/.agent/bin/claude')).toContain(
-      '@couetilc/agentic-coding@^1 claude',
+      '--package @couetilc/agentic-coding@^1 -- agent claude',
     );
   });
 
@@ -450,7 +450,9 @@ describe('runInit — real git fixture, re-run idempotency', () => {
     // Engine-owned shim regenerated.
     const shim = readFileSync(shimPath, 'utf8');
     expect(shim).not.toContain('CLOBBERED');
-    expect(shim).toContain('@couetilc/agentic-coding@^0 claude');
+    expect(shim).toContain(
+      '--package @couetilc/agentic-coding@^0 -- agent claude',
+    );
     expect(isExecutable(shimPath)).toBe(true);
 
     // The summary reports the user-owned files as skipped and skips the

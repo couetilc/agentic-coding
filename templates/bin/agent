@@ -4,4 +4,4 @@ if [ "${IS_SANDBOX:-}" = "1" ]; then
 	echo "agent: already inside the agent container; host shim skipped." >&2
 	exit 0
 fi
-exec npx -y @couetilc/agentic-coding@^{{MAJOR}} "$@"
+exec npx -y --package @couetilc/agentic-coding@^{{MAJOR}} -- agent "$@"

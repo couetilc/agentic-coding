@@ -88,7 +88,7 @@ missing one belongs in.
 
 ## Updating
 
-The shims pin the major: `npx -y @couetilc/agentic-coding@^0 ...`. Patch
+The shims pin the major: `npx -y --package @couetilc/agentic-coding@^0 -- agent ...`. Patch
 and minor releases arrive automatically the next time you run a command (npx
 resolves the newest matching version). A **major** bump is deliberate: re-run
 `agent init` to rewrite the shims to the new major (`@^0` → the next).

@@ -149,7 +149,7 @@ by a content hash of `.agent/`, so an unchanged overlay skips its per-launch
 
 ## Updating
 
-The shims pin the major: `npx -y @couetilc/agentic-coding@^<major>`. Patch and
+The shims pin the major: `npx -y --package @couetilc/agentic-coding@^<major> -- agent ...`. Patch and
 minor releases arrive automatically the next time you run a command. A major bump
 is deliberate — re-run `agent init` to rewrite the shims to the new major.
 
