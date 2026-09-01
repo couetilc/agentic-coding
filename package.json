@@ -1,6 +1,6 @@
 {
   "name": "@couetilc/agentic-coding",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Isolated-agent-container tooling: run Claude Code / Codex in disposable per-project Docker containers.",
   "type": "module",
   "repository": {
