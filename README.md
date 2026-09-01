@@ -61,7 +61,7 @@ export default {
 
   agents: {
     claude: { model: 'claude-fable-5', effort: 'xhigh' },
-    codex:  { model: 'gpt-5.5',        effort: 'xhigh' },
+    codex:  { model: 'gpt-5.6-sol',    effort: 'xhigh' },
   },
 
   requiredEnv: [],                  // .env keys the preflight requires beyond GH_TOKEN

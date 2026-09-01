@@ -23,7 +23,7 @@ const VALID_CONFIG = {
   ports: { astro: 4321 },
   agents: {
     claude: { model: 'claude-fable-5', effort: 'xhigh' },
-    codex: { model: 'gpt-5.5', effort: 'xhigh' },
+    codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
   },
   requiredEnv: [],
   caches: ['uv'],
@@ -555,7 +555,7 @@ describe('runLaunch', () => {
       'exec',
       '--dangerously-bypass-approvals-and-sandbox',
       '--model',
-      'gpt-5.5',
+      'gpt-5.6-sol',
       '--config',
       'model_reasoning_effort="xhigh"',
       'do it',

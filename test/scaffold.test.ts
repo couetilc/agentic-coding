@@ -191,6 +191,9 @@ describe('runInit — derivation and rendered content', () => {
     expect(config).toContain("repo: 'couetilc/couetil.com'");
     expect(config).toContain("defaultBranch: 'main'");
     expect(config).toContain('schemaVersion: 1');
+    expect(config).toContain(
+      "codex:  { model: 'gpt-5.6-sol',    effort: 'xhigh' }",
+    );
     expect(config).not.toContain('{{'); // every token substituted
 
     // Engine package.json is exactly {"type":"module"}.

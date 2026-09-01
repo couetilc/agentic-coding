@@ -94,7 +94,7 @@ if [ "$AGENT_KIND" = "codex" ]; then
 	# truth (config.toml effort can be ignored on a fresh launch, openai/codex#17436).
 	mkdir -p "$HOME/.codex"
 	{
-		printf 'model = "%s"\n' "${CODEX_MODEL:-gpt-5.5}"
+		printf 'model = "%s"\n' "${CODEX_MODEL:-gpt-5.6-sol}"
 		printf 'model_reasoning_effort = "%s"\n\n' "${CODEX_EFFORT:-xhigh}"
 		printf '[projects."/workspace"]\n'
 		printf 'trust_level = "trusted"\n'

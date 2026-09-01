@@ -26,7 +26,7 @@ it('loads a real ESM .agent/config.js from disk', async () => {
   ports: { web: 3000 },
   agents: {
     claude: { model: 'claude-fable-5', effort: 'xhigh' },
-    codex: { model: 'gpt-5.5', effort: 'xhigh' },
+    codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
   },
   requiredEnv: [],
   caches: ['uv'],

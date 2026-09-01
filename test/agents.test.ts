@@ -4,7 +4,7 @@ import { codexAgent } from '../src/agents/codex.js';
 import type { AgentAuthDeps, AgentSettings } from '../src/types.js';
 
 const CLAUDE: AgentSettings = { model: 'claude-fable-5', effort: 'xhigh' };
-const CODEX: AgentSettings = { model: 'gpt-5.5', effort: 'xhigh' };
+const CODEX: AgentSettings = { model: 'gpt-5.6-sol', effort: 'xhigh' };
 
 function authDeps(over: Partial<AgentAuthDeps> = {}): AgentAuthDeps {
   return {
@@ -72,7 +72,7 @@ describe('codex agent', () => {
       'exec',
       '--dangerously-bypass-approvals-and-sandbox',
       '--model',
-      'gpt-5.5',
+      'gpt-5.6-sol',
       '--config',
       'model_reasoning_effort="xhigh"',
       'do it',
@@ -84,7 +84,7 @@ describe('codex agent', () => {
       'codex',
       '--dangerously-bypass-approvals-and-sandbox',
       '--model',
-      'gpt-5.5',
+      'gpt-5.6-sol',
       '--config',
       'model_reasoning_effort="xhigh"',
       'review',
@@ -94,7 +94,7 @@ describe('codex agent', () => {
   it('injects CODEX_MODEL/CODEX_EFFORT for the entrypoint config.toml', () => {
     expect(codexAgent.modelEnv(CODEX)).toEqual([
       '-e',
-      'CODEX_MODEL=gpt-5.5',
+      'CODEX_MODEL=gpt-5.6-sol',
       '-e',
       'CODEX_EFFORT=xhigh',
     ]);
